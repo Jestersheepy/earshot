@@ -80,6 +80,13 @@ impl Capture {
     pub fn start(source: Source, t0: Instant) -> Result<Self> {
         let track = Track::new(t0);
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
+        if source == Source::Mic {
+            if let Some(wave) = demo_mic()? {
+                let t = track.clone();
+                let thread = std::thread::spawn(move || play_into(&t, &wave, &stop_rx));
+                return Ok(Self { track, stop: Some(stop_tx), thread: Some(thread), source });
+            }
+        }
         let (ready_tx, ready_rx) = mpsc::channel::<Result<()>>();
         let t = track.clone();
         let thread = std::thread::spawn(move || {
@@ -119,6 +126,41 @@ impl Capture {
 impl Drop for Capture {
     fn drop(&mut self) {
         self.shutdown();
+    }
+}
+
+/// For demo recordings: with EARSHOT_MIC_WAV set to a WAV file, or a folder of them (used in name
+/// order, one per capture, wrapping around), the "mic" plays that recording instead of the real one.
+fn demo_mic() -> Result<Option<Vec<f32>>> {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let Some(p) = std::env::var_os("EARSHOT_MIC_WAV").map(std::path::PathBuf::from) else { return Ok(None) };
+    let file = if p.is_dir() {
+        let mut wavs: Vec<_> = std::fs::read_dir(&p)?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|f| f.extension().is_some_and(|x| x.eq_ignore_ascii_case("wav")))
+            .collect();
+        wavs.sort();
+        anyhow::ensure!(!wavs.is_empty(), "no WAV files in {}", p.display());
+        wavs[NEXT.fetch_add(1, Ordering::Relaxed) % wavs.len()].clone()
+    } else {
+        p
+    };
+    // the time lets a screen recording be lined up with the voice afterwards
+    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+    eprintln!("demo mic: {} at unix ms {ms}", file.display());
+    Ok(Some(read_wav(&file)?))
+}
+
+/// Feeds `wave` at real-time pace against the clock, then silence, until stopped.
+fn play_into(track: &Track, wave: &[f32], stop: &mpsc::Receiver<()>) {
+    let start = Instant::now();
+    let mut sent = 0;
+    while let Err(mpsc::RecvTimeoutError::Timeout) = stop.recv_timeout(std::time::Duration::from_millis(20)) {
+        let due = (start.elapsed().as_secs_f64() * SR as f64) as usize;
+        let mut chunk = wave[sent.min(wave.len())..due.min(wave.len())].to_vec();
+        chunk.resize(due - sent, 0.0);
+        track.push(&chunk, false);
+        sent = due;
     }
 }
 

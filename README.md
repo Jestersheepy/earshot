@@ -12,7 +12,8 @@ Dictation, voice notes and meeting notes, with the speech recognition and the AI
 - **Polished.** A small floating dot, a panel that opens right beside it and expands into a full window, light and dark themes, soft start and stop chimes. It's built to feel like a finished app rather than a script with a tray icon.
 - **Light.** About 18 MB of memory and practically no CPU while it waits. See [Footprint](#footprint).
 
-![Earshot's expanded window showing a meeting note with its summary](docs/screenshots/expanded.png)
+<p align="center"><a href="docs/earshot-demo.mp4"><img src="docs/demo.webp" alt="Earshot demo: dictating an email, a spoken list becoming bullet points, then a meeting note by the dot" width="100%"></a><br>
+<sub>The voice is <a href="https://gradium.ai/phonon">Phonon</a> text-to-speech fed into Earshot as its mic. <a href="docs/earshot-demo.mp4">Watch with sound (MP4)</a></sub></p>
 
 ## What it does
 
@@ -35,6 +36,8 @@ Everything runs on the CPU with no network calls. Only the one-time model downlo
 | App | Rust + Tauri; the dot, menu and pop-ups are drawn natively, the panel is WebView2 only while open (freed 3 minutes after closing) | ~20 MB | about 18 MB idle |
 
 ## Screenshots
+
+![Earshot's expanded window showing a meeting note with its summary](docs/screenshots/expanded.png)
 
 <table>
 <tr>
@@ -77,7 +80,7 @@ Uninstall from Windows Settings > Apps. Tick "Delete the application data" to al
 
 The installer isn't code-signed yet, so SmartScreen asks for confirmation the first time ("More info" > "Run anyway").
 
-**Developing.** `tools/install_models.py` hard-links the repo's `models/` into `%LOCALAPPDATA%\Earshot\models`, so a fresh build skips the download. The speech model is served from this repo's `models-v1` release; publish a new export there and update the hashes in `setup.rs`.
+**Developing.** `tools/install_models.py` hard-links the repo's `models/` into `%LOCALAPPDATA%\Earshot\models`, so a fresh build skips the download. The speech model is served from this repo's `models-v1` release; publish a new export there and update the hashes in `setup.rs`. For demo recordings, set `EARSHOT_MIC_WAV` to a WAV file (or a folder of them, used in name order) and Earshot plays it as the mic instead of the real one.
 
 ## Models
 
