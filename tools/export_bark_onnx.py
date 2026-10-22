@@ -78,3 +78,11 @@ pieces = proc.tokenizer.convert_ids_to_tokens(list(range(cfg.vocab_size)))
 (out / "NOTICE").write_text((src / "NOTICE").read_text())
 for f in sorted(out.iterdir()):
     print(f"{f.name:24s} {os.path.getsize(f) / 1e6:8.1f} MB")
+
+# Same weights for the Rust runtime (safetensors; LSTM biases pre-summed).
+from safetensors.numpy import save_file  # noqa: E402
+
+w = dict(np.load(out / "decoder.npz"))
+for i in range(2):
+    w[f"lstm_bias_l{i}"] = w.pop(f"lstm_bias_ih_l{i}") + w.pop(f"lstm_bias_hh_l{i}")
+save_file({k: np.ascontiguousarray(v) for k, v in w.items()}, str(out / "decoder.safetensors"))

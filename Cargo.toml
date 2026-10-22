@@ -1,0 +1,14 @@
+[workspace]
+members = ["crates/core", "crates/overlay", "src-tauri"]
+resolver = "3"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
+
+# Decoder math is plain loops; keep them fast in dev/test builds too.
+[profile.dev.package.earshot-core]
+opt-level = 3
