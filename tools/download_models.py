@@ -1,6 +1,6 @@
 """Download everything Earshot needs into ./models (one-time, the only network use).
 
-    python tools/download_models.py            # Bark source + llama.cpp (CPU) + LFM2-Transcript Q4_K_M
+    python tools/download_models.py            # Bark source + llama.cpp (CPU) + LFM2-Transcript + LFM2-1.2B (Q4_K_M)
     python tools/download_models.py --no-llm   # skip the summarizer (~1.7 GB)
 
 The Bark ONNX export itself is a separate step (needs torch once): see README.
@@ -15,7 +15,10 @@ from pathlib import Path
 MODELS = Path(__file__).resolve().parent.parent / "models"
 BARK = "https://huggingface.co/ConwayResearch/Underdog-Bark-3.0-Plus/resolve/main/"
 BARK_FILES = ["model.bark", "bark_loader.py", "NOTICE"]
-LLM = "https://huggingface.co/LiquidAI/LFM2-2.6B-Transcript-GGUF/resolve/main/LFM2-2.6B-Transcript-Q4_K_M.gguf"
+LLMS = [
+    "https://huggingface.co/LiquidAI/LFM2-2.6B-Transcript-GGUF/resolve/main/LFM2-2.6B-Transcript-Q4_K_M.gguf",  # summaries
+    "https://huggingface.co/LiquidAI/LFM2-1.2B-GGUF/resolve/main/LFM2-1.2B-Q4_K_M.gguf",  # smart formatting, command mode
+]
 
 
 def fetch(url, dest):
@@ -51,4 +54,5 @@ if __name__ == "__main__":
         fetch(BARK + f, MODELS / "bark-src" / f)
     if "--no-llm" not in sys.argv:
         llama_cpp()
-        fetch(LLM, MODELS / "llm" / Path(LLM).name)
+        for url in LLMS:
+            fetch(url, MODELS / "llm" / Path(url).name)

@@ -998,6 +998,7 @@ dependencies = [
  "earshot-core",
  "earshot-overlay",
  "parking_lot 0.13.0",
+ "regex",
  "serde",
  "serde_json",
  "tauri",

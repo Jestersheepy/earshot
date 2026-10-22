@@ -1,9 +1,9 @@
-mod config;
+pub mod config;
 mod controller;
-mod llm;
+pub mod llm;
 mod meeting;
 mod notes;
-mod text;
+pub mod text;
 
 use std::sync::Arc;
 use std::sync::mpsc::{Sender, channel};

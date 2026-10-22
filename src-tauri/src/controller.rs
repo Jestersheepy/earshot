@@ -20,12 +20,12 @@ use earshot_overlay::{Overlay, UiEvent};
 use crate::config::Config;
 use crate::llm::Pool;
 use crate::meeting::{Meeting, summarize, worth_summarizing};
+use crate::text::FORMAT_CTX;
 use crate::{notes, text};
 
 const TAP_MS: u64 = 300;
 const DOUBLE_TAP: Duration = Duration::from_millis(600);
 const MIN_AUDIO_S: f32 = 0.3;
-const FORMAT_CTX: u32 = 4096;
 
 pub enum AppEvent {
     Hotkey(hotkeys::Event),
@@ -488,28 +488,7 @@ impl Controller {
 // ---- job bodies -----------------------------------------------------------------------------
 
 fn format_dictation(sh: &Shared, raw: &str) -> String {
-    let cfg = &sh.cfg;
-    let snipped = text::apply_snippets(raw, &cfg.snippets);
-    if cfg.snippets.iter().any(|s| s.text == snipped) {
-        return snipped; // the whole dictation was a snippet trigger
-    }
-    let t = text::apply_dictionary(&snipped, &cfg.dictionary);
-    let app = clipboard::foreground_app();
-    let literal = app.as_ref().is_some_and(|a| cfg.literal_apps.iter().any(|l| l.eq_ignore_ascii_case(a)));
-    let model = cfg.llm_model(&cfg.llm.format_model);
-    if !cfg.smart_format || literal || !text::needs_formatting(&t) || !sh.pool.available(&model) {
-        return t;
-    }
-    let max_tokens = (t.split_whitespace().count() * 3 + 64) as u32;
-    let user = text::format_user(&t, app.as_deref(), &cfg.dictionary);
-    match sh.pool.chat(&model, FORMAT_CTX, text::FORMAT_SYSTEM, &user, max_tokens, 0.1) {
-        Ok(out) if !out.trim().is_empty() => text::apply_dictionary(&text::tidy_llm(&out), &cfg.dictionary),
-        Ok(_) => t,
-        Err(e) => {
-            eprintln!("smart format failed: {e:#}");
-            t
-        }
-    }
+    text::smart_format(&sh.pool, &sh.cfg, raw, clipboard::foreground_app().as_deref()).0
 }
 
 fn run_command(sh: &Shared, instruction: &str, selection: Option<&str>) -> Result<String> {

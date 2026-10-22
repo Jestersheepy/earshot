@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use parking_lot::Mutex;
-use serde_json::json;
+use serde_json::{Value, json};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -96,9 +96,15 @@ impl Pool {
     }
 
     pub fn chat(&self, model: &Path, ctx: u32, system: &str, user: &str, max_tokens: u32, temperature: f32) -> Result<String> {
+        let messages = vec![json!({"role": "system", "content": system}), json!({"role": "user", "content": user})];
+        self.chat_messages(model, ctx, messages, max_tokens, temperature)
+    }
+
+    /// Full message list, e.g. few-shot user/assistant pairs before the real request.
+    pub fn chat_messages(&self, model: &Path, ctx: u32, messages: Vec<Value>, max_tokens: u32, temperature: f32) -> Result<String> {
         let port = self.port(model, ctx)?;
         let body = json!({
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
             "cache_prompt": true,
@@ -108,7 +114,7 @@ impl Pool {
             .timeout_global(Some(Duration::from_secs(1800)))
             .build()
             .send_json(&body)?;
-        let v: serde_json::Value = resp.body_mut().read_json()?;
+        let v: Value = resp.body_mut().read_json()?;
         if let Some(s) = self.servers.lock().get_mut(model) {
             s.last_used = Instant::now();
         }
