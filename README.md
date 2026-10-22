@@ -1,6 +1,20 @@
-# Earshot
+<h1 align="center"><img src="src-tauri/icons/128x128.png" width="72" alt=""><br>Earshot</h1>
 
-Local dictation, voice notes and meeting notes for Windows. A small floating pill that keeps your voice on your machine.
+<p align="center"><b>A free, open-source Wispr Flow alternative for Windows that runs entirely on your PC.</b></p>
+
+<p align="center"><a href="https://ko-fi.com/thedreamingjester"><img src="https://img.shields.io/badge/Ko--fi-grab%20me%20a%20coffee-14a38b?logo=kofi&logoColor=white" alt="Support on Ko-fi"></a></p>
+
+Dictation, voice notes and meeting notes, with the speech recognition and the AI clean-up running on your own CPU. No account, no subscription, no cloud server: your voice never leaves your machine.
+
+- **Offline and on-device.** Speech-to-text, formatting, command mode and meeting summaries all run locally. After the one-time model download, Earshot works with the network unplugged.
+- **No cloud connection.** Nothing is uploaded and there's no telemetry. If you'd rather have a cloud model write your meeting summaries, you can add your own Claude or OpenAI API key; it's off by default.
+- **Free and open source.** MIT licensed, with no usage caps and no "Pro" tier.
+- **Polished.** A small floating dot, a panel that opens right beside it and expands into a full window, light and dark themes, soft start and stop chimes. It's built to feel like a finished app rather than a script with a tray icon.
+- **Light.** About 18 MB of memory and practically no CPU while it waits. See [Footprint](#footprint).
+
+![Earshot's expanded window showing a meeting note with its summary](docs/screenshots/expanded.png)
+
+## What it does
 
 - **Dictate**: hold **Ctrl+Win**, speak, release. The text is pasted wherever your cursor is, tidied by a small local model (fillers, "no wait, Thursday", spoken lists). Double-tap to keep it listening hands-free; clicking the dot does the same by default.
 - **Command mode**: select text, hold **Ctrl+Win+Alt** and say what to do ("make this friendlier", "turn this into bullets"). With nothing selected, it writes new text.
@@ -18,7 +32,42 @@ Everything runs on the CPU with no network calls. Only the one-time model downlo
 | Formatting, command mode | [LFM2-1.2B](https://huggingface.co/LiquidAI/LFM2-1.2B-GGUF) Q4_K_M through llama.cpp's `llama-server` | 730 MB | about 1 GB, kept warm 5 minutes after use |
 | Summaries | [Qwen3-4B-Instruct-2507](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507) Q4_K_M, same server | 2.5 GB | about 3–4 GB, only while summarizing |
 | Speakers | [CAM++](https://github.com/modelscope/3D-Speaker) voice embeddings (sherpa-onnx export), same ONNX Runtime | 28 MB | a few MB, only while saving a meeting |
-| App | Rust + Tauri; the dot, menu and pop-ups are drawn natively, the panel is WebView2 only while open (freed 3 minutes after closing) | ~20 MB | about 30 MB idle |
+| App | Rust + Tauri; the dot, menu and pop-ups are drawn natively, the panel is WebView2 only while open (freed 3 minutes after closing) | ~20 MB | about 18 MB idle |
+
+## Screenshots
+
+<table>
+<tr>
+<td><img src="docs/screenshots/home.png" alt="Home: today's dictation stats and recent notes"></td>
+<td><img src="docs/screenshots/note.png" alt="A meeting note with speakers and a Standard summary"></td>
+</tr>
+<tr>
+<td align="center">Home: today's stats and recent notes, right beside the dot</td>
+<td align="center">A meeting with its speakers and summary</td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/settings.png" alt="Settings"></td>
+<td><img src="docs/screenshots/home-dark.png" alt="Home in dark mode"></td>
+</tr>
+<tr>
+<td align="center">Settings</td>
+<td align="center">Dark mode</td>
+</tr>
+</table>
+
+## Footprint
+
+Earshot keeps almost nothing in memory until you use it. Measured on Windows 11 (Ryzen 9 7950X3D):
+
+| | Memory | When |
+|---|---|---|
+| Waiting in the background | **about 18 MB** (6 MB private), about 0.1% CPU | Always. The dot, menu and pop-ups are drawn natively, with no browser engine running. |
+| Speech model | about 900 MB | Loaded for instant dictation, then unloaded after 15 minutes idle. Turn off "Load speech model at startup" to load it only when you first dictate. |
+| Formatting model | about 1 GB | While tidying a dictation, then kept warm for 5 minutes. |
+| Summary model | about 3–4 GB | Only while summarising a meeting. Not needed at all if you use a cloud key. |
+| Panel | WebView2 | Only while open; freed 3 minutes after you close it. |
+
+Everything runs on the CPU, so no GPU is needed. The installer is 18 MB; the models are downloaded once on first launch.
 
 ## Install
 
@@ -75,3 +124,11 @@ Checks:
 - Without headphones, the mic hears the call. Earshot mutes mic frames while the other side is louder, and drops "Me" lines that repeat an "Others" line.
 - Elevated (admin) windows only accept pasted text if Earshot also runs elevated.
 - Only text clipboard content is restored after a dictation paste.
+
+## Support
+
+Got use out of it? Feel free to [grab me a coffee](https://ko-fi.com/thedreamingjester). Bug reports and pull requests are welcome too.
+
+## Licence
+
+Earshot's code is released under the [MIT licence](LICENSE). The models it downloads keep their own licences: Underdog Bark 3.0 Plus (CC BY 4.0), LFM2-1.2B (LFM Open License v1.0), Qwen3-4B-Instruct-2507 (Apache 2.0) and CAM++ (Apache 2.0). The bundled llama.cpp and ONNX Runtime are MIT licensed.
