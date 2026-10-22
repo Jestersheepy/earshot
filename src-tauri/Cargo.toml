@@ -20,7 +20,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 earshot-core = { path = "../crates/core" }
 earshot-overlay = { path = "../crates/overlay" }
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = ["tray-icon", "protocol-asset"] }
 tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
@@ -29,5 +29,6 @@ anyhow = "1"
 chrono = "0.4"
 parking_lot = "0.13"
 regex = "1"
+trash = "5"
 rusqlite = { version = "0.37", features = ["bundled"] }
 ureq = { version = "3", features = ["json"] }

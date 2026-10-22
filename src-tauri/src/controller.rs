@@ -20,6 +20,7 @@ use earshot_overlay::{Overlay, UiEvent};
 
 use crate::config::Config;
 use crate::history::{Entry, History};
+use tauri::Emitter;
 use crate::llm::Pool;
 use crate::meeting::{Meeting, summarize, worth_summarizing};
 use crate::text::FORMAT_CTX;
@@ -37,6 +38,8 @@ pub enum AppEvent {
     Action(String),
     Job(JobDone),
     Mic(MicEvent),
+    /// Settings saved in the Notes window.
+    Reload(Box<Config>),
 }
 
 pub enum JobDone {
@@ -94,8 +97,15 @@ pub struct Controller {
 }
 
 impl Controller {
-    pub fn new(cfg: Config, engine: Arc<Engine>, pool: Pool, tx: Sender<AppEvent>, overlay: Overlay, app: tauri::AppHandle) -> Self {
-        let history = History::open().map(Arc::new).map_err(|e| eprintln!("history: {e:#}")).ok();
+    pub fn new(
+        cfg: Config,
+        engine: Arc<Engine>,
+        pool: Pool,
+        history: Option<Arc<History>>,
+        tx: Sender<AppEvent>,
+        overlay: Overlay,
+        app: tauri::AppHandle,
+    ) -> Self {
         let last_text = history.as_ref().and_then(|h| h.last_text());
         Self {
             sh: Shared { cfg: Arc::new(cfg), engine, pool, tx, history },
@@ -136,6 +146,13 @@ impl Controller {
                 AppEvent::Action(a) => self.action(&a),
                 AppEvent::Job(j) => self.on_job(j),
                 AppEvent::Mic(e) => self.on_mic(e),
+                AppEvent::Reload(cfg) => {
+                    match crate::bindings(&cfg) {
+                        Ok(b) => hotkeys::rebind(b),
+                        Err(e) => eprintln!("hotkeys: {e:#}"),
+                    }
+                    self.sh.cfg = Arc::new(*cfg);
+                }
             }
             self.tick();
         }
@@ -420,10 +437,12 @@ impl Controller {
             JobDone::Dictated(t) if t.is_empty() => {}
             JobDone::Dictated(t) => {
                 self.last_text = Some(t);
+                let _ = self.app.emit("history-changed", ());
                 self.flash(PillState::Done);
             }
             JobDone::Saved { title, body, path } => {
                 self.flash(PillState::Done);
+                let _ = self.app.emit("notes-changed", ());
                 let id = self.toast(&title, &body, Icon::Check, Accent::Dictate, vec![("open", "Open")], 8.0);
                 self.toast_paths.insert(id, path);
             }
@@ -486,7 +505,7 @@ impl Controller {
                 match action.as_str() {
                     "open" => {
                         if let Some(p) = self.toast_paths.remove(&id) {
-                            open(&p);
+                            crate::window::show_note(&self.app, &p);
                         }
                     }
                     "record" if self.rec.is_none() => self.start_meeting(prompt),
@@ -533,17 +552,9 @@ impl Controller {
                 self.overlay.set_visible(visible);
                 self.update_cfg(|c| c.pill.hidden = !visible);
             }
-            "open" => {
-                let dir = self.sh.cfg.notes_dir.clone();
-                let _ = std::fs::create_dir_all(&dir);
-                open(&dir);
-            }
-            "settings" => {
-                if !crate::config::path().exists() {
-                    self.sh.cfg.save();
-                }
-                let _ = std::process::Command::new("notepad").arg(crate::config::path()).spawn();
-            }
+            "open" => crate::window::show(&self.app, "notes"),
+            "history" => crate::window::show(&self.app, "history"),
+            "settings" => crate::window::show(&self.app, "settings"),
             "quit" => {
                 self.quitting = true;
                 if let Some(d) = self.dict.take() {
@@ -685,10 +696,6 @@ fn preview(s: &str) -> String {
 
 fn file_name(p: &std::path::Path) -> String {
     p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
-}
-
-fn open(p: &std::path::Path) {
-    let _ = std::process::Command::new("explorer").arg(p).spawn();
 }
 
 /// "ctrl+alt+n" -> "Ctrl+Alt+N"

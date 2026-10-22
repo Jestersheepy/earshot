@@ -1,10 +1,13 @@
+mod commands;
 pub mod config;
 mod controller;
 mod history;
+mod library;
 pub mod llm;
 mod meeting;
 mod notes;
 pub mod text;
+mod window;
 
 use std::sync::Arc;
 use std::sync::mpsc::{Sender, channel};
@@ -15,12 +18,12 @@ use earshot_core::stt::Engine;
 use earshot_overlay::Overlay;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::RunEvent;
+use tauri::{Manager, RunEvent};
 
 use config::Config;
 use controller::{AppEvent, Controller};
 
-fn bindings(cfg: &Config) -> anyhow::Result<Bindings> {
+pub(crate) fn bindings(cfg: &Config) -> anyhow::Result<Bindings> {
     let hk = &cfg.hotkeys;
     let mut toggles = Vec::new();
     for (name, combo) in [
@@ -58,7 +61,8 @@ fn tray(app: &tauri::App, tx: Sender<AppEvent>) -> tauri::Result<()> {
             &item("note", "Voice note (start / stop)", None)?,
             &item("meeting", "Meeting (start / stop)", None)?,
             &PredefinedMenuItem::separator(app)?,
-            &item("open", "Open notes", None)?,
+            &item("open", "Open Earshot", None)?,
+            &item("history", "Dictation history", None)?,
             &item("toggle", "Show / hide pill", None)?,
             &item("settings", "Settings", None)?,
             &PredefinedMenuItem::separator(app)?,
@@ -89,9 +93,23 @@ pub fn run() {
     let tx_dup = tx.clone();
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(move |_, _, _| {
-            let _ = tx_dup.send(AppEvent::Action("show".into()));
+            let _ = tx_dup.send(AppEvent::Action("open".into()));
         }))
         .plugin(tauri_plugin_opener::init())
+        .invoke_handler(tauri::generate_handler![
+            commands::list_notes,
+            commands::search_notes,
+            commands::get_note,
+            commands::rename_note,
+            commands::delete_note,
+            commands::resummarize,
+            commands::reveal,
+            commands::open_notes_folder,
+            commands::list_history,
+            commands::delete_history,
+            commands::get_settings,
+            commands::save_settings,
+        ])
         .setup(move |app| {
             let cfg = Config::load();
             let engine = Arc::new(Engine::new(
@@ -118,7 +136,10 @@ pub fn run() {
             let mic = forward(&tx, AppEvent::Mic);
             earshot_core::micwatch::watch(mic, Duration::from_secs(3), Duration::from_secs(5));
             tray(app, tx.clone())?;
-            let ctl = Controller::new(cfg, engine, pool, tx.clone(), overlay, app.handle().clone());
+            let history = history::History::open().map(Arc::new).map_err(|e| eprintln!("history: {e:#}")).ok();
+            app.manage(commands::AppState { pool: pool.clone(), history: history.clone(), tx: tx.clone() });
+            let _ = app.asset_protocol_scope().allow_directory(&cfg.notes_dir, true);
+            let ctl = Controller::new(cfg, engine, pool, history, tx.clone(), overlay, app.handle().clone());
             std::thread::spawn(move || ctl.run(rx));
             Ok(())
         })

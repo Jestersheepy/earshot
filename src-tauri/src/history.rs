@@ -17,6 +17,18 @@ pub struct Entry<'a> {
     pub ms: u64,
 }
 
+#[derive(serde::Serialize)]
+pub struct Row {
+    pub id: i64,
+    pub ts: String,
+    pub mode: String,
+    pub app: Option<String>,
+    pub raw: String,
+    pub text: String,
+    pub llm: bool,
+    pub ms: i64,
+}
+
 pub struct History {
     conn: Mutex<Connection>,
 }
@@ -57,6 +69,35 @@ impl History {
         Ok(())
     }
 
+    /// Newest first; `query` matches raw or final text, or the app.
+    pub fn list(&self, query: &str, limit: u32) -> Result<Vec<Row>> {
+        let like = format!("%{}%", query.trim().replace('%', "\\%").replace('_', "\\_"));
+        let conn = self.conn.lock();
+        let mut st = conn.prepare(
+            "SELECT id, ts, mode, app, raw, text, llm, ms FROM dictations
+             WHERE text != '' AND (text LIKE ?1 ESCAPE '\\' OR raw LIKE ?1 ESCAPE '\\' OR app LIKE ?1 ESCAPE '\\')
+             ORDER BY id DESC LIMIT ?2",
+        )?;
+        let rows = st.query_map(params![like, limit], |r| {
+            Ok(Row {
+                id: r.get(0)?,
+                ts: r.get(1)?,
+                mode: r.get(2)?,
+                app: r.get(3)?,
+                raw: r.get(4)?,
+                text: r.get(5)?,
+                llm: r.get(6)?,
+                ms: r.get(7)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn delete(&self, id: i64) -> Result<()> {
+        self.conn.lock().execute("DELETE FROM dictations WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
     pub fn last_text(&self) -> Option<String> {
         self.conn
             .lock()
@@ -79,6 +120,10 @@ mod tests {
         h.add(&Entry { mode: "dictate", app: Some("notepad.exe"), raw: "um hi", text: "Hi", llm: false, ms: 120 }).unwrap();
         h.add(&Entry { mode: "dictate", app: None, raw: "", text: "", llm: false, ms: 5 }).unwrap();
         assert_eq!(h.last_text().as_deref(), Some("Hi"));
+        let rows = h.list("notepad", 10).unwrap();
+        assert_eq!(rows.len(), 1);
+        h.delete(rows[0].id).unwrap();
+        assert!(h.list("", 10).unwrap().is_empty());
         drop(h);
         let _ = std::fs::remove_file(&p);
     }
