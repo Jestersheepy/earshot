@@ -71,7 +71,7 @@ Everything runs on the CPU, so no GPU is needed. The installer is 18 MB; the mod
 
 ## Install
 
-Run `Earshot_<version>_x64-setup.exe`. It installs per user (no admin rights), adds a Start menu entry, and starts Earshot with Windows (turn that off in Settings). The installer is small; on first launch Earshot downloads its models (about 1.6 GB, plus 2.5 GB for summaries on this PC, which you can skip if you use a cloud model). Downloads resume if interrupted and each file is checked against its SHA-256 (`src-tauri/src/setup.rs`).
+Download `Earshot_<version>_x64-setup.exe` from the [latest release](https://github.com/Jestersheepy/earshot/releases/latest) and run it. Built and tested on 64-bit Windows 11; Windows 10 should work but is untested. It installs per user (no admin rights), adds a Start menu entry, and starts Earshot with Windows (turn that off in Settings). The installer is small; on first launch Earshot downloads its models (about 1.6 GB, plus 2.5 GB for summaries on this PC, which you can skip if you use a cloud model). Downloads resume if interrupted and each file is checked against its SHA-256 (`src-tauri/src/setup.rs`).
 
 Uninstall from Windows Settings > Apps. Tick "Delete the application data" to also remove the models, settings and dictation history; your notes in `Documents\Earshot` are never touched.
 
