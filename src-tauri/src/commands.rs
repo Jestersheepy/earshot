@@ -200,6 +200,18 @@ pub struct Settings {
     cloud_keys: Vec<&'static str>,
 }
 
+#[tauri::command]
+pub fn setup_status() -> crate::setup::Status {
+    crate::setup::status(&Config::load())
+}
+
+/// Download the missing models (`summaries`: include the local summary model); progress comes as
+/// "setup-progress" events.
+#[tauri::command]
+pub fn setup_start(summaries: bool, app: AppHandle, state: State<'_, AppState>) {
+    crate::setup::start(app, &Config::load(), summaries, state.tx.clone());
+}
+
 /// Save (or, when empty, remove) a cloud provider's API key in Windows Credential Manager.
 #[tauri::command]
 pub fn set_cloud_key(provider: String, key: String) -> R<()> {

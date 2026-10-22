@@ -76,8 +76,19 @@ export type Settings = {
   /** Cloud providers with an API key saved. */
   cloud_keys: Provider[];
 };
-export type Stats = { today_words: number; week_words: number; total_words: number; today_count: number };
-export type PanelMode = { expanded: boolean; pinned: boolean; origin: "top" | "bottom" | "left" | "right" | "none" };
+export type SetupProgress = {
+  state: "idle" | "downloading" | "verifying" | "done" | "failed";
+  done: number;
+  total: number;
+  part: string;
+  speech_ready: boolean;
+  error: string | null;
+};
+/** Bytes still to download: `needed` without the summary model, `summaries` for it. */
+export type SetupStatus = { needed: number; summaries: number; speech_ready: boolean; progress: SetupProgress | null };
+export type Stats ={ today_words: number; week_words: number; total_words: number; today_count: number };
+/** `anchor`: where the dot is, as fractions of the panel's size (null when it isn't beside the dot). */
+export type PanelMode = { expanded: boolean; pinned: boolean; anchor: [number, number] | null };
 
 export const api = {
   listNotes: () => invoke<NoteMeta[]>("list_notes"),
@@ -93,7 +104,9 @@ export const api = {
   getSettings: () => invoke<Settings>("get_settings"),
   saveSettings: (config: Config) => invoke<void>("save_settings", { config }),
   setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
-  setCloudKey: (provider: Provider, key: string) => invoke<void>("set_cloud_key", { provider, key }),
+  setupStatus: () => invoke<SetupStatus>("setup_status"),
+  setupStart: (summaries: boolean) => invoke<void>("setup_start", { summaries }),
+  setCloudKey:(provider: Provider, key: string) => invoke<void>("set_cloud_key", { provider, key }),
   testCloud: (cloud: Cloud, key: string | null) => invoke<string>("test_cloud", { cloud, key }),
   renameSpeaker: (path: string, from: string, to: string) => invoke<void>("rename_speaker", { path, from, to }),
   suggestSpeakerNames: (path: string) => invoke<[string, string][]>("suggest_speaker_names", { path }),

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- The app icon at 16-32 px (tray, taskbar, title bars): no shadows, a disc to the edges, a bolder mic. -->
+  <defs>
+    <linearGradient id="disc" x1="0.2" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#2cc7a7"/>
+      <stop offset="1" stop-color="#0c8571"/>
+    </linearGradient>
+  </defs>
+  <circle cx="512" cy="512" r="504" fill="url(#disc)"/>
+  <g fill="none" stroke="#ffffff" stroke-linecap="round" stroke-width="84">
+    <rect x="404" y="190" width="216" height="370" rx="108" fill="#ffffff" stroke="none"/>
+    <path d="M300 470 a212 212 0 0 0 424 0"/>
+    <path d="M512 684 v112"/>
+    <path d="M404 810 h216"/>
+  </g>
+</svg>

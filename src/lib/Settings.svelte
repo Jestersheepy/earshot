@@ -4,6 +4,8 @@
   import Icon from "$lib/Icon.svelte";
   import DotPreview from "$lib/DotPreview.svelte";
 
+  let { onsetup }: { onsetup?: () => void } = $props();
+
   let settings = $state<Settings | null>(null);
   let cfg = $state<Config | null>(null);
   let saved = $state("");
@@ -51,14 +53,14 @@
   let held: string[] = [];
   let voices = $state<[string, number][]>([]);
 
-  const SWATCHES = ["#4f6ef7", "#14a38b", "#d6457a", "#8b6cf0", "#2f9e66", "#e0662f", "#3d3a35"];
+  const SWATCHES = ["#14a38b", "#4f6ef7", "#d6457a", "#8b6cf0", "#2f9e66", "#e0662f", "#3d3a35"];
   const clicks: { id: Config["pill"]["click"]; label: string }[] = [
     { id: "dictate", label: "Dictate" },
     { id: "note", label: "Voice note" },
     { id: "meeting", label: "Meeting" },
     { id: "panel", label: "Panel" },
   ];
-  let accentShown = $derived(cfg && cfg.pill.accent !== "auto" ? cfg.pill.accent : (settings?.accent ?? "#4f6ef7"));
+  let accentShown = $derived(cfg && cfg.pill.accent !== "auto" ? cfg.pill.accent : (settings?.accent ?? "#14a38b"));
 
   // Preview theme and accent while editing; Save makes them stick, Discard puts them back.
   $effect(() => {
@@ -576,6 +578,12 @@
               <span class="status" class:ok>{ok ? "Installed" : "Missing"}</span>
             </div>
           {/each}
+          {#if onsetup && !(settings.models.speech && settings.models.format && (settings.models.summary || cfg.cloud.enabled))}
+            <div class="row">
+              <div class="label"><div>Some models aren’t downloaded yet</div></div>
+              <button class="btn primary" onclick={onsetup}>Download</button>
+            </div>
+          {/if}
           <div class="row"><div class="hint mono">{settings.models.dir}</div></div>
         </div>
       </section>

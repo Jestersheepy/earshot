@@ -8,8 +8,9 @@
   import NoteView from "$lib/NoteView.svelte";
   import History from "$lib/History.svelte";
   import Settings from "$lib/Settings.svelte";
+  import Setup from "$lib/Setup.svelte";
 
-  type Section = "home" | "notes" | "history" | "settings";
+  type Section = "home" | "notes" | "history" | "settings" | "setup";
   type Filter = "all" | "meeting" | "voice";
 
   let width = $state(400);
@@ -22,9 +23,43 @@
   let hits = $state<SearchHit[] | null>(null);
   let selected = $state<string | null>(null);
   let pinned = $state(false);
-  let origin = $state<PanelMode["origin"]>("none");
-  let opened = $state(0);
+  let anchor: PanelMode["anchor"] = null;
+  let card = $state<HTMLDivElement>();
   let searchBox = $state<HTMLInputElement>();
+
+  const calm = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /** Grow out of the dot (or fade up when there's no dot to grow from). */
+  function enter() {
+    if (!card) return;
+    card.getAnimations().forEach((a) => a.cancel());
+    if (anchor && !calm()) {
+      card.style.transformOrigin = `${anchor[0] * 100}% ${anchor[1] * 100}%`;
+      card.animate(
+        [
+          { opacity: 0, transform: "scale(0.55)", borderRadius: "28px" },
+          { opacity: 1, offset: 0.35 },
+          { opacity: 1, transform: "none", borderRadius: "14px" },
+        ],
+        { duration: 320, easing: "cubic-bezier(0.16, 1, 0.3, 1)" },
+      );
+    } else {
+      card.style.transformOrigin = "50% 50%";
+      card.animate([{ opacity: 0, transform: "scale(0.985)" }, { opacity: 1, transform: "none" }], { duration: 180, easing: "ease-out" });
+    }
+  }
+  /** Shrink back toward the dot; the window hides once this has played (window.rs LEAVE). */
+  function leave() {
+    if (!card) return;
+    (document.activeElement as HTMLElement | null)?.blur();
+    card.getAnimations().forEach((a) => a.cancel());
+    const to = anchor && !calm() ? "scale(0.7)" : "scale(0.985)";
+    card.animate([{ opacity: 1, transform: "none" }, { opacity: 0, transform: to }], {
+      duration: 150,
+      easing: "cubic-bezier(0.4, 0, 1, 1)",
+      fill: "forwards",
+    });
+  }
 
   const filters: { id: Filter; label: string }[] = [
     { id: "all", label: "All" },
@@ -87,7 +122,7 @@
     if (s === "meetings" || s === "voice" || s === "notes") {
       section = "notes";
       filter = s === "meetings" ? "meeting" : s === "voice" ? "voice" : "all";
-    } else if (s === "home" || s === "history" || s === "settings") section = s;
+    } else if (s === "home" || s === "history" || s === "settings" || s === "setup") section = s;
   }
 
   function openNote(path: string) {
@@ -115,9 +150,10 @@
       listen<string>("open-note", (e) => refresh().then(() => openNote(e.payload))),
       listen<PanelMode>("panel-mode", (e) => {
         pinned = e.payload.pinned;
-        origin = e.payload.expanded ? "none" : e.payload.origin;
-        opened++;
+        anchor = e.payload.anchor;
+        enter();
       }),
+      listen("panel-leave", leave),
       listen("panel-hidden", () => {
         if (!wide) selected = null;
       }),
@@ -194,8 +230,10 @@
   </label>
 {/snippet}
 
-{#key opened}
-  <div class="app origin-{origin}" class:wide>
+<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+<!-- Compact, the window is a little larger than the panel (room for its shadow): a click there is a click outside. -->
+<div class="shell" class:wide onclick={(e) => e.target === e.currentTarget && api.panel.close()}>
+  <div class="app" class:wide bind:this={card}>
     <header class="bar" data-tauri-drag-region>
       {#if !wide && selected}
         <button class="icon-btn" onclick={() => (selected = null)} aria-label="Back"><Icon name="back" /></button>
@@ -217,7 +255,9 @@
       <button class="icon-btn close" onclick={() => api.panel.close()} title="Close"><Icon name="x" size={15} /></button>
     </header>
 
-    {#if wide}
+    {#if section === "setup"}
+      <main class="body"><Setup ondone={() => (section = "home")} /></main>
+    {:else if wide}
       <div class="cols" class:two={section !== "notes"}>
         <aside class="side">
           {@render search()}
@@ -243,7 +283,7 @@
         {:else if section === "history"}
           <main class="page"><History /></main>
         {:else if section === "settings"}
-          <main class="page"><Settings /></main>
+          <main class="page"><Settings onsetup={() => (section = "setup")} /></main>
         {:else}
           <section class="list">{@render list()}</section>
           <main class="reader">
@@ -283,43 +323,39 @@
         {:else if section === "history"}
           <History />
         {:else if section === "settings"}
-          <Settings />
+          <Settings onsetup={() => (section = "setup")} />
         {:else}
           <div class="listwrap">{@render list()}</div>
         {/if}
       </main>
     {/if}
   </div>
-{/key}
+</div>
 
 <style>
+  .shell {
+    height: 100vh;
+    box-sizing: border-box;
+    padding: 18px; /* window.rs MARGIN */
+  }
+  .shell.wide {
+    padding: 0;
+  }
   .app {
     display: flex;
     flex-direction: column;
-    height: 100vh;
+    height: 100%;
     background: var(--bg);
-    animation: open 0.2s var(--ease);
+    border-radius: 14px;
+    overflow: hidden;
+    border: 1px solid var(--panel-edge);
+    box-shadow: var(--panel-shadow);
+    will-change: transform, opacity;
   }
-  .app.origin-bottom {
-    transform-origin: 50% 100%;
-  }
-  .app.origin-top {
-    transform-origin: 50% 0;
-  }
-  .app.origin-left {
-    transform-origin: 0 50%;
-  }
-  .app.origin-right {
-    transform-origin: 100% 50%;
-  }
-  .app.origin-none {
-    animation: none;
-  }
-  @keyframes open {
-    from {
-      opacity: 0;
-      transform: scale(0.96);
-    }
+  .app.wide {
+    border: 0;
+    border-radius: 0; /* Windows rounds the window itself */
+    box-shadow: none;
   }
 
   /* ---- title bar ---- */

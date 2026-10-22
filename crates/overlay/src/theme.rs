@@ -43,14 +43,14 @@ pub struct Style {
     pub peek_hint: String,
 }
 
-pub const DEFAULT_ACCENT: Rgba = Rgba(79, 110, 247, 255);
+pub const DEFAULT_ACCENT: Rgba = Rgba(20, 163, 139, 255);
 
 impl Default for Style {
     fn default() -> Self {
         Self {
             theme: ThemeMode::System,
             size: PillSize::Medium,
-            idle: IdleStyle::Dot,
+            idle: IdleStyle::Mic,
             accent: DEFAULT_ACCENT,
             peek: true,
             peek_title: "Click to dictate".into(),

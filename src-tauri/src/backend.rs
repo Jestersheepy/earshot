@@ -25,7 +25,10 @@ impl<'a> Summarizer<'a> {
     pub fn new(cfg: &Config, pool: &'a Pool) -> Result<Self> {
         if !cfg.cloud.enabled {
             let model = cfg.llm_model(&cfg.llm.summary_model);
-            ensure!(pool.available(&model), "Summary model not found: {}", model.display());
+            ensure!(
+                pool.available(&model),
+                "the summary model isn't downloaded (Settings › Models), or choose a cloud model in Settings › Meetings"
+            );
             return Ok(Self::Local { pool, model, ctx: cfg.llm.ctx });
         }
         Self::cloud(&cfg.cloud, earshot_core::secret::get(&cfg.cloud.provider), cfg.llm.ctx)

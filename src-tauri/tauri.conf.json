@@ -23,13 +23,29 @@
     "active": true,
     "targets": ["nsis"],
     "publisher": "Earshot",
+    "homepage": "https://github.com/Jestersheepy/earshot",
+    "category": "Productivity",
+    "copyright": "Copyright © 2026 Shaun B",
     "shortDescription": "Local dictation, voice notes and meeting notes",
+    "longDescription": "Private dictation, voice notes and meeting notes for Windows. Speech recognition and summaries run on your PC.",
     "resources": {
-      "../models/onnxruntime.dll": "onnxruntime.dll"
+      "../models/onnxruntime.dll": "onnxruntime.dll",
+      "../models/llama.cpp/llama-server.exe": "llama.cpp/llama-server.exe",
+      "../models/llama.cpp/llama-server-impl.dll": "llama.cpp/llama-server-impl.dll",
+      "../models/llama.cpp/llama.dll": "llama.cpp/llama.dll",
+      "../models/llama.cpp/llama-common.dll": "llama.cpp/llama-common.dll",
+      "../models/llama.cpp/mtmd.dll": "llama.cpp/mtmd.dll",
+      "../models/llama.cpp/libomp.dll": "llama.cpp/libomp.dll",
+      "../models/llama.cpp/LICENSE-LLVM-OpenMP": "llama.cpp/LICENSE-LLVM-OpenMP",
+      "../models/llama.cpp/ggml*.dll": "llama.cpp/"
     },
     "windows": {
       "nsis": {
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico",
+        "headerImage": "icons/nsis-header.bmp",
+        "sidebarImage": "icons/nsis-sidebar.bmp",
+        "installerHooks": "windows/hooks.nsh"
       }
     },
     "icon": [

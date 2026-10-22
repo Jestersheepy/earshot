@@ -22,15 +22,13 @@ Everything runs on the CPU with no network calls. Only the one-time model downlo
 
 ## Install
 
-1. Get the models (one-time, see below), then put them where the app looks:
+Run `Earshot_<version>_x64-setup.exe`. It installs per user (no admin rights), adds a Start menu entry, and starts Earshot with Windows (turn that off in Settings). The installer is small; on first launch Earshot downloads its models (about 1.6 GB, plus 2.5 GB for summaries on this PC, which you can skip if you use a cloud model). Downloads resume if interrupted and each file is checked against its SHA-256 (`src-tauri/src/setup.rs`).
 
-   ```bash
-   .venv/Scripts/python tools/install_models.py
-   ```
+Uninstall from Windows Settings > Apps. Tick "Delete the application data" to also remove the models, settings and dictation history; your notes in `Documents\Earshot` are never touched.
 
-   This hard-links (or copies) the runtime files into `%LOCALAPPDATA%\Earshot\models`.
+The installer isn't code-signed yet, so SmartScreen asks for confirmation the first time ("More info" > "Run anyway").
 
-2. Run `Earshot_<version>_x64-setup.exe` from `target/release/bundle/nsis/`. It installs per user (no admin), adds a Start menu entry, and Earshot starts with Windows (turn that off in Settings).
+**Developing.** `tools/install_models.py` hard-links the repo's `models/` into `%LOCALAPPDATA%\Earshot\models`, so a fresh build skips the download. The speech model is served from this repo's `models-v1` release; publish a new export there and update the hashes in `setup.rs`.
 
 ## Models
 
@@ -55,7 +53,8 @@ Needs Rust (stable MSVC), Node and pnpm.
 ```bash
 pnpm install
 pnpm tauri dev                     # debug build; uses ./models if AppData has none
-pnpm tauri build                   # installer in target/release/bundle/nsis/
+pnpm tauri build                   # installer in target/release/bundle/nsis/ (bundles ./models/llama.cpp)
+.venv/Scripts/python tools/make_icons.py   # after editing src-tauri/icons/*.svg
 ```
 
 Checks:

@@ -25,13 +25,19 @@ static PINNED: AtomicBool = AtomicBool::new(false);
 static HIDE_GEN: AtomicU64 = AtomicU64::new(0);
 static LAST_PLACE: Mutex<Option<Place>> = Mutex::new(None);
 
+/// Transparent room around the compact panel for its shadow, which the page draws (logical px).
+const MARGIN: f64 = 18.0;
+/// How long the page gets to animate out before the window hides.
+const LEAVE: Duration = Duration::from_millis(200);
+
 /// What the page needs to lay itself out and animate in from the dot.
 #[derive(Serialize, Clone)]
 pub struct Mode {
     pub expanded: bool,
     pub pinned: bool,
-    /// The side of the panel the dot is on: "top" | "bottom" | "left" | "right" | "none".
-    pub origin: &'static str,
+    /// Where the dot is, as fractions of the panel's width and height, so it can grow out of it.
+    /// None when the panel isn't beside the dot.
+    pub anchor: Option<(f64, f64)>,
 }
 
 /// `section`: "home" | "notes" | "meetings" | "voice" | "history" | "settings". `place`: where the dot is,
@@ -83,7 +89,10 @@ fn build(app: &AppHandle, start: Option<&serde_json::Value>) -> Option<WebviewWi
         .title("Earshot")
         .inner_size(COMPACT.0, COMPACT.1)
         .decorations(false)
-        .shadow(true) // Windows 11: native rounded corners and shadow on a frameless window
+        // Compact, the page draws the panel's corners and shadow so it can grow out of the dot; expanded,
+        // Windows 11 draws them (see arrange).
+        .transparent(true)
+        .shadow(false)
         .skip_taskbar(true)
         .resizable(false)
         .visible(false)
@@ -98,10 +107,10 @@ fn build(app: &AppHandle, start: Option<&serde_json::Value>) -> Option<WebviewWi
     };
     let handle = w.clone();
     w.on_window_event(move |e| match e {
-        WindowEvent::Focused(false) if !EXPANDED_NOW.load(Ordering::SeqCst) && !PINNED.load(Ordering::SeqCst) => hide(&handle),
+        WindowEvent::Focused(false) if !EXPANDED_NOW.load(Ordering::SeqCst) && !PINNED.load(Ordering::SeqCst) => leave(&handle),
         WindowEvent::CloseRequested { api, .. } => {
             api.prevent_close();
-            hide(&handle);
+            leave(&handle);
         }
         _ => {}
     });
@@ -127,19 +136,27 @@ fn arrange(w: &WebviewWindow, expanded: bool, place: Option<Place>) {
         }
         (None, None) => (0, 0, 1920, 1080),
     };
-    let (pos, origin) = match (expanded, place) {
-        (false, Some((dot, _))) => beside(dot, work, (pw, ph), s),
+    let (pos, anchor) = match (expanded, place) {
+        (false, Some((dot, _))) => {
+            let (pos, _) = beside(dot, work, (pw, ph), s);
+            let frac = |d: i32, p: i32, len: i32| ((d - p) as f64 / len as f64).clamp(0.0, 1.0);
+            (pos, Some((frac(dot.0, pos.0, pw), frac(dot.1, pos.1, ph))))
+        }
         _ => {
             let (l, t, r, b) = work;
-            (((l + r - pw) / 2, (t + b - ph) / 2), "none")
+            (((l + r - pw) / 2, (t + b - ph) / 2), None)
         }
     };
+    // compact, the window is the panel plus a transparent margin for the shadow the page draws
+    let m = if expanded { 0 } else { (MARGIN * s) as i32 };
+    let _ = w.set_shadow(expanded);
     let _ = w.set_skip_taskbar(!expanded);
     let _ = w.set_resizable(expanded);
-    let _ = w.set_min_size(Some(tauri::Size::Logical(if expanded { (780.0, 500.0) } else { COMPACT }.into())));
-    let _ = w.set_size(PhysicalSize::new(pw as u32, ph as u32));
-    let _ = w.set_position(PhysicalPosition::new(pos.0, pos.1));
-    let _ = w.emit("panel-mode", Mode { expanded, pinned: PINNED.load(Ordering::SeqCst), origin });
+    let min = if expanded { (780.0, 500.0) } else { (COMPACT.0 + 2.0 * MARGIN, COMPACT.1 + 2.0 * MARGIN) };
+    let _ = w.set_min_size(Some(tauri::Size::Logical(min.into())));
+    let _ = w.set_size(PhysicalSize::new((pw + 2 * m) as u32, (ph + 2 * m) as u32));
+    let _ = w.set_position(PhysicalPosition::new(pos.0 - m, pos.1 - m));
+    let _ = w.emit("panel-mode", Mode { expanded, pinned: PINNED.load(Ordering::SeqCst), anchor });
 }
 
 /// Top-left corner for a panel of `size` next to the dot: above or below when it fits there, otherwise
@@ -159,6 +176,19 @@ fn beside((x, y): (i32, i32), (l, t, r, b): (i32, i32, i32, i32), (w, h): (i32, 
         (x + off, y - h / 2, "left")
     };
     ((clamp(px, l + margin, r - w - margin), clamp(py, t + margin, b - h - margin)), origin)
+}
+
+/// Let the page animate out, then hide, unless the panel is opened again meanwhile.
+fn leave(w: &WebviewWindow) {
+    let _ = w.emit("panel-leave", ());
+    let id = HIDE_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    let w = w.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(LEAVE);
+        if HIDE_GEN.load(Ordering::SeqCst) == id {
+            hide(&w);
+        }
+    });
 }
 
 fn hide(w: &WebviewWindow) {
@@ -202,7 +232,7 @@ pub fn set_pinned(app: &AppHandle, pinned: bool) {
 
 pub fn close(app: &AppHandle) {
     if let Some(w) = app.get_webview_window(LABEL) {
-        hide(&w);
+        leave(&w);
     }
 }
 

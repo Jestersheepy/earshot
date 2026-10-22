@@ -278,7 +278,19 @@ impl Controller {
         }
     }
 
+    /// Until the speech model is downloaded, anything that records opens the setup page instead.
+    fn needs_setup(&self) -> bool {
+        if crate::setup::speech_ready(&self.sh.cfg) {
+            return false;
+        }
+        crate::window::show(&self.app, "setup", self.place());
+        true
+    }
+
     fn start_dictation(&mut self, hands_free: bool) {
+        if self.needs_setup() {
+            return;
+        }
         match Capture::start(Source::Mic, Instant::now()) {
             Ok(cap) => {
                 self.tone(Tone::Start);
@@ -334,6 +346,7 @@ impl Controller {
 
     fn toggle_note(&mut self) {
         match self.rec.take() {
+            None if self.needs_setup() => {}
             None => match Capture::start(Source::Mic, Instant::now()) {
                 Ok(cap) => {
                     self.tone(Tone::Start);
@@ -375,6 +388,9 @@ impl Controller {
 
     /// `detected`: the (app, name) whose mic use prompted this; the meeting then ends with the call.
     fn start_meeting(&mut self, detected: Option<(String, String)>) {
+        if self.needs_setup() {
+            return;
+        }
         let label = detected.as_ref().map(|(_, name)| name.clone()).or_else(clipboard::foreground_app);
         match Meeting::start(self.sh.engine.clone(), label) {
             Ok((meeting, warning)) => {
@@ -582,7 +598,16 @@ impl Controller {
             "open" => crate::window::show(&self.app, "home", self.place()),
             "history" => crate::window::show(&self.app, "history", self.place()),
             "settings" => crate::window::show(&self.app, "settings", self.place()),
-            "welcome" => {
+            "welcome" if !crate::setup::speech_ready(&self.sh.cfg) => crate::window::show(&self.app, "setup", self.place()),
+            "speech-ready" if self.sh.cfg.preload => {
+                let e = self.sh.engine.clone();
+                std::thread::spawn(move || {
+                    if let Err(err) = e.preload() {
+                        eprintln!("preloading speech model: {err:#}");
+                    }
+                });
+            }
+            "welcome" | "models-ready" => {
                 let body = format!("Hold {} to dictate. Right-click the dot for notes and meetings.", pretty_combo(&self.sh.cfg.hotkeys.dictate));
                 self.toast("Earshot is ready", &body, Icon::Mic, Accent::Dictate, Vec::new(), 8.0);
             }

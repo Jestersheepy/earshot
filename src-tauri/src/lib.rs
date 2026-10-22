@@ -7,6 +7,7 @@ pub mod library;
 pub mod llm;
 mod meeting;
 mod notes;
+mod setup;
 mod speakers;
 pub mod summary;
 pub mod text;
@@ -114,6 +115,8 @@ pub fn run() {
             commands::history_stats,
             commands::set_cloud_key,
             commands::test_cloud,
+            commands::setup_status,
+            commands::setup_start,
             commands::run_action,
             commands::panel_pin,
             commands::panel_close,
@@ -148,7 +151,7 @@ pub fn run() {
                 cfg.stt_threads,
                 Duration::from_secs(cfg.idle_unload_min * 60),
             ));
-            if cfg.preload {
+            if cfg.preload && setup::speech_ready(&cfg) {
                 let e = engine.clone();
                 std::thread::spawn(move || {
                     if let Err(err) = e.preload() {

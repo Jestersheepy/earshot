@@ -101,8 +101,8 @@ impl Default for Pill {
             y: None,
             hidden: false,
             size: "medium".into(),
-            idle: "dot".into(),
-            accent: "auto".into(),
+            idle: "mic".into(),
+            accent: "#14a38b".into(),
             peek: true,
             click: "dictate".into(),
         }
@@ -218,8 +218,13 @@ impl Config {
         local
     }
 
+    /// The installer ships llama.cpp next to the app; development builds use the repo's models/llama.cpp.
     pub fn llama_server(&self) -> PathBuf {
-        self.llm.server.clone().unwrap_or_else(|| self.models_dir().join("llama.cpp").join("llama-server.exe"))
+        if let Some(p) = &self.llm.server {
+            return p.clone();
+        }
+        let bundled = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("llama.cpp").join("llama-server.exe")));
+        bundled.filter(|p| p.exists()).unwrap_or_else(|| self.models_dir().join("llama.cpp").join("llama-server.exe"))
     }
 
     pub fn speaker_dir(&self) -> PathBuf {

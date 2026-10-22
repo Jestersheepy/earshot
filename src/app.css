@@ -11,7 +11,7 @@
   --border: rgba(40, 30, 10, 0.08);
   --border-strong: rgba(40, 30, 10, 0.15);
   --hover: rgba(40, 30, 10, 0.045);
-  --accent: #4f6ef7;
+  --accent: #14a38b;
   --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
   --accent-text: color-mix(in srgb, var(--accent) 82%, var(--text));
   --meeting: #e5484d;
@@ -22,6 +22,9 @@
   --shadow-sm: 0 1px 2px rgba(60, 40, 10, 0.06);
   --shadow: 0 1px 2px rgba(60, 40, 10, 0.05), 0 6px 20px rgba(60, 40, 10, 0.06);
   --shadow-lg: 0 2px 6px rgba(60, 40, 10, 0.06), 0 16px 40px rgba(60, 40, 10, 0.12);
+  /* the compact panel's edge and shadow, which must fit in window.rs MARGIN (18px) */
+  --panel-edge: rgba(40, 30, 10, 0.1);
+  --panel-shadow: 0 1px 2px rgba(60, 40, 10, 0.08), 0 4px 14px rgba(60, 40, 10, 0.14);
   --radius: 12px;
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
   color-scheme: light;
@@ -43,6 +46,10 @@
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 20px rgba(0, 0, 0, 0.25);
     --shadow-lg: 0 2px 6px rgba(0, 0, 0, 0.3), 0 16px 40px rgba(0, 0, 0, 0.4);
+  --panel-edge: rgba(255, 255, 255, 0.1);
+  --panel-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 14px rgba(0, 0, 0, 0.45);
+    --panel-edge: rgba(255, 255, 255, 0.1);
+    --panel-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 14px rgba(0, 0, 0, 0.45);
     color-scheme: dark;
   }
 }
@@ -72,7 +79,7 @@ html,
 body {
   margin: 0;
   height: 100%;
-  background: var(--bg);
+  background: transparent; /* the panel draws its own background; see +page.svelte */
   color: var(--text);
   font: 13px/1.5 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;

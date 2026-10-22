@@ -33,3 +33,4 @@ regex = "1"
 trash = "5"
 rusqlite = { version = "0.37", features = ["bundled"] }
 ureq = { version = "3", features = ["json"] }
+sha2 = "0.10"
