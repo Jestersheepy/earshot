@@ -130,7 +130,7 @@ impl Pool {
 }
 
 /// Qwen-style models may emit <think>…</think> even when asked not to.
-fn strip_think(s: &str) -> &str {
+pub(crate) fn strip_think(s: &str) -> &str {
     match s.find("</think>") {
         Some(i) => &s[i + 8..],
         None => s,

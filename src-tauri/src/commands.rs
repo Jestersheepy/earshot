@@ -7,7 +7,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_autostart::ManagerExt;
 
-use crate::config::Config;
+use crate::backend::{PROVIDERS, Summarizer};
+use crate::config::{Cloud, Config};
 use crate::controller::AppEvent;
 use crate::history::{History, Row};
 use crate::library::{self, NoteDetail, NoteMeta, SearchHit};
@@ -80,7 +81,7 @@ pub async fn suggest_speaker_names(path: String, state: State<'_, AppState>) -> 
         if labels.is_empty() {
             return Ok(Vec::new());
         }
-        let model = cfg.llm_model(&cfg.llm.summary_model);
+        let by = Summarizer::new(&cfg, &pool).map_err(err)?;
         let text = crate::summary::transcript_text(&lines).join("\n");
         let ask = format!(
             "Some speakers in this meeting transcript are labelled {}. For each of those labels, give the person's name only \
@@ -88,7 +89,7 @@ pub async fn suggest_speaker_names(path: String, state: State<'_, AppState>) -> 
              are thanked or answered by name just after. Answer one line per label as 'Speaker N: Name', or 'Speaker N: unknown'.\n\n{text}",
             labels.join(", ")
         );
-        let answer = pool.chat(&model, cfg.llm.ctx, "You read meeting transcripts carefully and never guess.", &ask, 200, 0.0).map_err(err)?;
+        let answer = by.chat("You read meeting transcripts carefully and never guess.", &ask, 200, 0.0).map_err(err)?;
         let lower = text.to_lowercase();
         Ok(answer
             .lines()
@@ -130,17 +131,14 @@ pub async fn resummarize(path: String, mode: Mode, state: State<'_, AppState>) -
     let pool = state.pool.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let cfg = Config::load();
-        let model = cfg.llm_model(&cfg.llm.summary_model);
-        if !pool.available(&model) {
-            return Err(format!("Summary model not found: {}", model.display()));
-        }
+        let by = Summarizer::new(&cfg, &pool).map_err(err)?;
         let lines = library::transcript(&p).map_err(err)?;
         if !crate::meeting::worth_summarizing(&lines) {
             return Err("This transcript is too short to summarize.".into());
         }
         let d = library::detail(&p).map_err(err)?;
         let head = format!("Title: {}\nDate: {}\nDuration: {}", d.meta.title, d.meta.date, d.meta.duration);
-        let summary = crate::summary::summarize(&pool, &model, cfg.llm.ctx, &lines, &head, mode).map_err(err)?;
+        let summary = crate::summary::summarize(&by, &lines, &head, mode).map_err(err)?;
         library::set_summary(&p, mode, &summary).map_err(err)?;
         Ok(summary)
     })
@@ -198,6 +196,27 @@ pub struct Settings {
     autostart: bool,
     /// The dot's accent as "#rrggbb" ("auto" resolved to the Windows accent).
     accent: String,
+    /// Cloud providers with an API key saved.
+    cloud_keys: Vec<&'static str>,
+}
+
+/// Save (or, when empty, remove) a cloud provider's API key in Windows Credential Manager.
+#[tauri::command]
+pub fn set_cloud_key(provider: String, key: String) -> R<()> {
+    let p = PROVIDERS.iter().find(|p| **p == provider).ok_or("unknown provider")?;
+    earshot_core::secret::set(p, key.trim()).map_err(err)
+}
+
+/// One small request with these (possibly unsaved) settings; returns the model's reply.
+#[tauri::command]
+pub async fn test_cloud(cloud: Cloud, key: Option<String>) -> R<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let key = key.filter(|k| !k.trim().is_empty()).map(|k| k.trim().to_string()).or_else(|| earshot_core::secret::get(&cloud.provider));
+        let by = Summarizer::cloud(&cloud, key, Config::load().llm.ctx).map_err(err)?;
+        by.chat("Answer in one word.", "Say OK.", 16, 0.0).map_err(err)
+    })
+    .await
+    .map_err(err)?
 }
 
 #[tauri::command]
@@ -217,7 +236,8 @@ pub fn get_settings(app: AppHandle) -> Settings {
     }
     .unwrap_or(earshot_overlay::theme::DEFAULT_ACCENT);
     let accent = format!("#{:02x}{:02x}{:02x}", accent.0, accent.1, accent.2);
-    Settings { config: cfg, models, autostart: app.autolaunch().is_enabled().unwrap_or(false), accent }
+    let cloud_keys = PROVIDERS.into_iter().filter(|p| earshot_core::secret::get(p).is_some()).collect();
+    Settings { config: cfg, models, autostart: app.autolaunch().is_enabled().unwrap_or(false), accent, cloud_keys }
 }
 
 /// Start or stop a voice note or meeting from the panel ("note" | "meeting").

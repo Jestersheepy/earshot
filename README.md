@@ -10,7 +10,7 @@ Local dictation, voice notes and meeting notes for Windows. A small floating pil
 - **The dot**: right-click for notes, meetings and what a click does (dictate, voice note, meeting or the panel). Its size, idle style, accent colour and hover hint are yours to choose.
 - **Panel**: double-click the dot (or use the tray) and a compact panel opens beside it: today's stats, recent notes, search, dictation history and settings. Expand it into a full window when you want more room.
 
-Everything runs on the CPU with no network calls. Only the one-time model download needs the internet.
+Everything runs on the CPU with no network calls. Only the one-time model download needs the internet. The one exception is opt-in: Settings › Meetings can send transcripts to Claude, OpenAI or any OpenAI-compatible server for summaries, using your own API key (kept in Windows Credential Manager).
 
 | Part | What | Disk | RAM |
 |---|---|---|---|

@@ -59,16 +59,22 @@ export type Config = {
   meeting_apps: Record<string, "ask" | "always" | "never">;
   detect_meetings: boolean;
   summary_mode: SummaryMode;
+  cloud: Cloud;
   detect_speakers: boolean;
   your_name: string;
   theme: "system" | "light" | "dark";
+  sounds: boolean;
 };
+export type Provider = "anthropic" | "openai" | "custom";
+export type Cloud = { enabled: boolean; provider: Provider; model: string; url: string };
 export type Settings = {
   config: Config;
   models: { dir: string; speech: boolean; server: boolean; summary: boolean; format: boolean };
   autostart: boolean;
   /** The dot's accent, resolved to #rrggbb. */
   accent: string;
+  /** Cloud providers with an API key saved. */
+  cloud_keys: Provider[];
 };
 export type Stats = { today_words: number; week_words: number; total_words: number; today_count: number };
 export type PanelMode = { expanded: boolean; pinned: boolean; origin: "top" | "bottom" | "left" | "right" | "none" };
@@ -87,6 +93,8 @@ export const api = {
   getSettings: () => invoke<Settings>("get_settings"),
   saveSettings: (config: Config) => invoke<void>("save_settings", { config }),
   setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
+  setCloudKey: (provider: Provider, key: string) => invoke<void>("set_cloud_key", { provider, key }),
+  testCloud: (cloud: Cloud, key: string | null) => invoke<string>("test_cloud", { cloud, key }),
   renameSpeaker: (path: string, from: string, to: string) => invoke<void>("rename_speaker", { path, from, to }),
   suggestSpeakerNames: (path: string) => invoke<[string, string][]>("suggest_speaker_names", { path }),
   listVoices: () => invoke<[string, number][]>("list_voices"),

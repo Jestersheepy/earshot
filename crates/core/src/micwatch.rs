@@ -57,18 +57,23 @@ pub fn in_use() -> Vec<String> {
 
 /// Lower-case exe names of all running processes.
 fn running_exes() -> std::collections::HashSet<String> {
+    processes().into_values().collect()
+}
+
+/// Process id to lower-case exe name.
+fn processes() -> HashMap<u32, String> {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
     };
-    let mut out = std::collections::HashSet::new();
+    let mut out = HashMap::new();
     unsafe {
         let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return out };
         let mut e = PROCESSENTRY32W { dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
         let mut ok = Process32FirstW(snap, &mut e).is_ok();
         while ok {
             let len = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
-            out.insert(String::from_utf16_lossy(&e.szExeFile[..len]).to_lowercase());
+            out.insert(e.th32ProcessID, String::from_utf16_lossy(&e.szExeFile[..len]).to_lowercase());
             ok = Process32NextW(snap, &mut e).is_ok();
         }
         let _ = CloseHandle(snap);
@@ -105,6 +110,68 @@ pub fn meeting_app(app: &str) -> Option<&'static str> {
     KNOWN.iter().find(|(k, _)| app.contains(k)).map(|(_, n)| *n)
 }
 
+const BROWSERS: &[&str] = &["chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "arc.exe", "opera.exe", "vivaldi.exe"];
+
+/// The call site open in a browser's windows ("Google Meet"), from window titles. Browsers title a window
+/// after its active tab, so a call in a background tab isn't seen; the caller falls back to the browser.
+pub fn browser_meeting(exe: &str) -> Option<&'static str> {
+    if !BROWSERS.contains(&exe) {
+        return None;
+    }
+    let procs = processes();
+    window_titles().into_iter().filter(|(pid, _)| procs.get(pid).is_some_and(|e| e == exe)).find_map(|(_, t)| meeting_site(&t))
+}
+
+/// Meeting sites by tab title.
+fn meeting_site(title: &str) -> Option<&'static str> {
+    let t = title.to_lowercase();
+    let t = t.trim_end_matches(" - google chrome").trim_end_matches(" - microsoft\u{200b} edge").trim_end_matches(" - microsoft edge");
+    if t.starts_with("meet - ") || t.starts_with("meet \u{2013} ") || t.contains("google meet") || t.contains("meet.google.com") {
+        Some("Google Meet")
+    } else if t.contains("| microsoft teams") || t.contains("microsoft teams meeting") {
+        Some("Teams")
+    } else if t.contains("zoom meeting") || t.contains("zoom workplace") || t.ends_with("- zoom") {
+        Some("Zoom")
+    } else if t.contains("webex") {
+        Some("Webex")
+    } else if t.contains("whereby") {
+        Some("Whereby")
+    } else if t.contains("jitsi meet") {
+        Some("Jitsi")
+    } else if t.contains("huddle") && t.contains("slack") {
+        Some("Slack")
+    } else {
+        None
+    }
+}
+
+/// (process id, title) of every visible top-level window with a title.
+fn window_titles() -> Vec<(u32, String)> {
+    use windows::Win32::Foundation::{HWND, LPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible};
+    use windows::core::BOOL;
+    unsafe extern "system" fn each(hwnd: HWND, out: LPARAM) -> BOOL {
+        unsafe {
+            let out = &mut *(out.0 as *mut Vec<(u32, String)>);
+            if IsWindowVisible(hwnd).as_bool() {
+                let mut buf = [0u16; 512];
+                let n = GetWindowTextW(hwnd, &mut buf);
+                if n > 0 {
+                    let mut pid = 0u32;
+                    GetWindowThreadProcessId(hwnd, Some(&mut pid));
+                    out.push((pid, String::from_utf16_lossy(&buf[..n as usize])));
+                }
+            }
+        }
+        BOOL(1)
+    }
+    let mut out: Vec<(u32, String)> = Vec::new();
+    unsafe {
+        let _ = EnumWindows(Some(each), LPARAM(&mut out as *mut _ as isize));
+    }
+    out
+}
+
 fn display_name(app: &str) -> String {
     meeting_app(app).map(String::from).unwrap_or_else(|| {
         let stem = app.trim_end_matches(".exe");
@@ -128,7 +195,8 @@ pub fn watch(tx: Sender<MicEvent>, poll: Duration, min_on: Duration) {
                 let (since, reported) = seen.entry(app.clone()).or_insert((Instant::now(), false));
                 if !*reported && since.elapsed() >= min_on {
                     *reported = true;
-                    let ev = MicEvent::Started { app: app.clone(), name: display_name(app), known: meeting_app(app).is_some() };
+                    let name = browser_meeting(app).map(String::from).unwrap_or_else(|| display_name(app));
+                    let ev = MicEvent::Started { app: app.clone(), name, known: meeting_app(app).is_some() };
                     if tx.send(ev).is_err() {
                         return;
                     }
@@ -156,6 +224,11 @@ mod tests {
         assert_eq!(meeting_app("wavelink.exe"), None);
         assert_eq!(display_name("com.tinyspeck.slackdesktop_8yrtsj140pw4g"), "Slack");
         assert_eq!(display_name("wavelink.exe"), "wavelink");
+        assert_eq!(meeting_site("Meet - abc-defg-hij - Google Chrome"), Some("Google Meet"));
+        assert_eq!(meeting_site("Meet \u{2013} Weekly sync"), Some("Google Meet"));
+        assert_eq!(meeting_site("Meeting with Sam | Microsoft Teams"), Some("Teams"));
+        assert_eq!(meeting_site("Inbox (3) - Gmail - Google Chrome"), None);
+        let _ = browser_meeting("chrome.exe");
         let _ = in_use(); // must not panic whatever the registry holds
     }
 }

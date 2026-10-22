@@ -1,13 +1,11 @@
 //! Meeting summaries at three depths. Transcripts too long for one prompt are first condensed part by part
 //! into notes that keep every detail; each mode then works from those.
 
-use std::path::Path;
-
 use anyhow::Result;
 use earshot_core::segment::Line;
 use serde::{Deserialize, Serialize};
 
-use crate::llm::Pool;
+use crate::backend::Summarizer;
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -89,12 +87,12 @@ pub fn transcript_text(lines: &[Line]) -> Vec<String> {
         .collect()
 }
 
-pub fn summarize(pool: &Pool, model: &Path, ctx: u32, lines: &[Line], head: &str, mode: Mode) -> Result<String> {
+pub fn summarize(by: &Summarizer, lines: &[Line], head: &str, mode: Mode) -> Result<String> {
     let ask = |task: &str, material: &str, max_tokens: u32, temperature: f32| {
         let user = format!("{task}\n\n{head}\n----------\n{material}");
-        pool.chat(model, ctx, SYSTEM, &user, max_tokens, temperature).map(|s| tidy(&s))
+        by.chat(SYSTEM, &user, max_tokens, temperature).map(|s| tidy(&s))
     };
-    let source = source(lines, ctx, |part| ask(CONDENSE, part, 1024, 0.2))?;
+    let source = source(lines, by.ctx(), |part| ask(CONDENSE, part, 1024, 0.2))?;
     if mode == Mode::Concise {
         return ask(CONCISE, &source, 400, 0.3);
     }

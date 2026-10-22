@@ -15,6 +15,7 @@ use earshot_core::speakers::Embedder;
 use earshot_core::stt::{Engine, SR};
 use earshot_core::micwatch::MicEvent;
 use earshot_core::{clipboard, hotkeys};
+use earshot_core::sounds::{self, Tone};
 use earshot_overlay::menu::{Icon, MenuItem, ToastSpec};
 use earshot_overlay::pill::{Accent, PillState};
 use earshot_overlay::theme::{self, IdleStyle, PillSize, Style, ThemeMode};
@@ -174,6 +175,7 @@ impl Controller {
         if let Some(d) = &self.dict {
             if d.tap_at.is_some_and(|t| t.elapsed() > DOUBLE_TAP) {
                 drop(self.dict.take().unwrap().cap.stop());
+                self.tone(Tone::Stop);
             } else {
                 self.overlay.set_level(d.cap.track.level());
             }
@@ -258,6 +260,7 @@ impl Controller {
                 } else if d.tap_at.is_none() && held_ms < TAP_MS {
                     if d.command {
                         drop(self.dict.take().unwrap().cap.stop());
+                        self.tone(Tone::Stop);
                     } else {
                         d.tap_at = Some(Instant::now());
                     }
@@ -278,6 +281,7 @@ impl Controller {
     fn start_dictation(&mut self, hands_free: bool) {
         match Capture::start(Source::Mic, Instant::now()) {
             Ok(cap) => {
+                self.tone(Tone::Start);
                 self.dict = Some(Dictation { cap, command: false, hands_free, stopping: false, tap_at: None });
                 let cfg = &self.sh.cfg;
                 let model = cfg.llm_model(&cfg.llm.format_model);
@@ -292,6 +296,7 @@ impl Controller {
     fn finish_dictation(&mut self) {
         let Some(d) = self.dict.take() else { return };
         let wave = d.cap.stop().read(0, None);
+        self.tone(Tone::Stop);
         if (wave.len() as f32) < SR as f32 * MIN_AUDIO_S {
             return;
         }
@@ -330,12 +335,16 @@ impl Controller {
     fn toggle_note(&mut self) {
         match self.rec.take() {
             None => match Capture::start(Source::Mic, Instant::now()) {
-                Ok(cap) => self.rec = Some(Recording::Note { cap, started: Local::now(), t0: Instant::now() }),
+                Ok(cap) => {
+                    self.tone(Tone::Start);
+                    self.rec = Some(Recording::Note { cap, started: Local::now(), t0: Instant::now() });
+                }
                 Err(e) => self.fail(format!("Microphone unavailable: {e}")),
             },
             Some(Recording::Note { cap, started, t0 }) => {
                 let duration = t0.elapsed().as_secs_f32();
                 let wave = cap.stop().read(0, None);
+                self.tone(Tone::Stop);
                 self.job(move |sh| save_note(&sh, wave, started, duration));
             }
             Some(other) => {
@@ -349,6 +358,7 @@ impl Controller {
         match self.rec.take() {
             None => self.start_meeting(None),
             Some(Recording::Meeting { meeting, started }) => {
+                self.tone(Tone::Stop);
                 self.meeting_app = None;
                 if let Some((_, toast)) = self.auto_stop.take() {
                     self.overlay.close_toast(toast);
@@ -368,6 +378,7 @@ impl Controller {
         let label = detected.as_ref().map(|(_, name)| name.clone()).or_else(clipboard::foreground_app);
         match Meeting::start(self.sh.engine.clone(), label) {
             Ok((meeting, warning)) => {
+                self.tone(Tone::Start);
                 self.rec = Some(Recording::Meeting { meeting, started: Local::now() });
                 self.meeting_app = detected;
                 if let Some(w) = warning {
@@ -385,6 +396,7 @@ impl Controller {
             MicEvent::Started { app, name, known } => {
                 let default = if known { "ask" } else { "never" };
                 let policy = self.sh.cfg.meeting_apps.get(&app).map_or(default, String::as_str);
+                eprintln!("{} mic: {app} ({name}) started; policy {policy}, recording {}", stamp(), self.rec.is_some());
                 if !self.sh.cfg.detect_meetings || policy == "never" {
                     return;
                 }
@@ -400,12 +412,15 @@ impl Controller {
                         let body = "Record and transcribe this call? Notes stay on this PC.";
                         let buttons = vec![("record", "Record"), ("dismiss", "Not now")];
                         let title = format!("Meeting detected \u{b7} {name}");
-                        let id = self.toast(&title, body, Icon::People, Accent::Meeting, buttons, 20.0);
+                        // stays until answered or the call lets go of the mic: a pre-join screen can hold
+                        // the mic for minutes before the call starts
+                        let id = self.toast(&title, body, Icon::People, Accent::Meeting, buttons, 0.0);
                         self.prompts.insert(id, (app, name));
                     }
                 }
             }
             MicEvent::Stopped { app } => {
+                eprintln!("{} mic: {app} stopped", stamp());
                 let stale: Vec<u64> = self.prompts.iter().filter(|(_, (a, _))| *a == app).map(|(id, _)| *id).collect();
                 for id in stale {
                     self.prompts.remove(&id);
@@ -591,6 +606,12 @@ impl Controller {
         }
     }
 
+    fn tone(&self, t: Tone) {
+        if self.sh.cfg.sounds && !self.quitting {
+            sounds::play(t);
+        }
+    }
+
     /// Where the dot is, for opening the panel beside it.
     fn place(&self) -> Option<crate::window::Place> {
         self.overlay.is_visible().then(|| self.overlay.pill_place())
@@ -628,6 +649,10 @@ impl Controller {
         }
         items
     }
+}
+
+fn stamp() -> String {
+    chrono::Local::now().format("%F %T").to_string()
 }
 
 /// The overlay's look from the settings.
@@ -753,9 +778,14 @@ fn save_meeting(sh: &Shared, meeting: Meeting, started: DateTime<Local>, with_su
         notes::write_note(&path, "meeting", started, done.duration_s, &body, &extra)
     };
     // Save the transcript first so nothing is lost if summarizing fails or the app quits.
-    let model = cfg.llm_model(&cfg.llm.summary_model);
-    let can_summarize = with_summary && worth_summarizing(&done.lines) && sh.pool.available(&model);
-    write(if can_summarize { "_Summarizing…_" } else { "_Too short to summarize._" })?;
+    let by = crate::backend::Summarizer::new(cfg, &sh.pool);
+    let worth = worth_summarizing(&done.lines);
+    let can_summarize = with_summary && worth && by.is_ok();
+    write(&match &by {
+        _ if can_summarize => "_Summarizing…_".to_string(),
+        Err(e) if with_summary && worth => format!("_Not summarized: {e}_"),
+        _ => "_Too short to summarize._".to_string(),
+    })?;
     let mut note = "Transcript saved.".to_string();
     if can_summarize {
         let head = format!(
@@ -764,7 +794,7 @@ fn save_meeting(sh: &Shared, meeting: Meeting, started: DateTime<Local>, with_su
             notes::fmt_duration(done.duration_s),
             extra[0].1
         );
-        match crate::summary::summarize(&sh.pool, &model, cfg.llm.ctx, &done.lines, &head, cfg.summary_mode) {
+        match crate::summary::summarize(by.as_ref().unwrap(), &done.lines, &head, cfg.summary_mode) {
             Ok(s) => {
                 write(&s)?;
                 note = preview(&s.lines().filter(|l| !l.starts_with('#')).collect::<Vec<_>>().join(" "));

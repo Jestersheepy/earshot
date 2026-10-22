@@ -1,3 +1,4 @@
+pub mod backend;
 mod commands;
 pub mod config;
 mod controller;
@@ -95,6 +96,11 @@ fn tray(app: &tauri::App, tx: Sender<AppEvent>) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(not(debug_assertions))]
+    if let Some(dir) = std::env::var_os("LOCALAPPDATA") {
+        let _ = earshot_core::logfile::redirect_stderr(&std::path::PathBuf::from(dir).join("Earshot").join("earshot.log"));
+    }
+    eprintln!("{} Earshot {} starting", chrono::Local::now().format("%F %T"), env!("CARGO_PKG_VERSION"));
     let (tx, rx) = channel::<AppEvent>();
     let tx_dup = tx.clone();
     tauri::Builder::default()
@@ -106,6 +112,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::panel_expand,
             commands::history_stats,
+            commands::set_cloud_key,
+            commands::test_cloud,
             commands::run_action,
             commands::panel_pin,
             commands::panel_close,

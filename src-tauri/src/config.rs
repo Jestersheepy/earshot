@@ -56,6 +56,26 @@ impl Default for Llm {
     }
 }
 
+/// Meeting summaries from a cloud model instead of the local one. The API key lives in Windows Credential
+/// Manager (earshot_core::secret), keyed by provider, never in this file.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(default)]
+pub struct Cloud {
+    pub enabled: bool,
+    /// "anthropic" | "openai" | "custom" (any OpenAI-compatible server: OpenRouter, Groq, Ollama, LM Studio…)
+    pub provider: String,
+    /// Empty: the provider's default.
+    pub model: String,
+    /// Base URL for "custom", e.g. http://localhost:11434/v1
+    pub url: String,
+}
+
+impl Default for Cloud {
+    fn default() -> Self {
+        Self { enabled: false, provider: "anthropic".into(), model: String::new(), url: String::new() }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct Pill {
@@ -119,12 +139,15 @@ pub struct Config {
     pub detect_meetings: bool,
     /// Depth of meeting summaries made when a meeting is saved.
     pub summary_mode: crate::summary::Mode,
+    pub cloud: Cloud,
     /// Tell voices apart in meetings (Speaker 1, 2, … and voices you've named before).
     pub detect_speakers: bool,
     /// Your label in meeting transcripts.
     pub your_name: String,
     /// "system" | "light" | "dark"
     pub theme: String,
+    /// A soft chime when listening starts and stops.
+    pub sounds: bool,
 }
 
 impl Default for Config {
@@ -149,9 +172,11 @@ impl Default for Config {
             meeting_apps: BTreeMap::new(),
             detect_meetings: true,
             summary_mode: Default::default(),
+            cloud: Cloud::default(),
             detect_speakers: true,
             your_name: "Me".into(),
             theme: "system".into(),
+            sounds: true,
         }
     }
 }

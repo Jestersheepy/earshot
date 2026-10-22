@@ -8,6 +8,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use earshot_lib::backend::Summarizer;
 use earshot_lib::config::Config;
 use earshot_lib::library;
 use earshot_lib::llm::Pool;
@@ -59,7 +60,8 @@ fn main() -> anyhow::Result<()> {
             let head = format!("Title: {case_name}");
             for mode in Mode::ALL {
                 let t = Instant::now();
-                let md = match summarize(&pool, model, cfg.llm.ctx, &lines, &head, mode) {
+                let by = Summarizer::Local { pool: &pool, model: model.clone(), ctx: cfg.llm.ctx };
+                let md = match summarize(&by, &lines, &head, mode) {
                     Ok(md) => md,
                     Err(e) => format!("ERROR: {e:#}"),
                 };

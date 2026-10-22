@@ -3,7 +3,10 @@
 pub mod audio;
 pub mod clipboard;
 pub mod hotkeys;
+pub mod logfile;
 pub mod micwatch;
 pub mod segment;
+pub mod secret;
+pub mod sounds;
 pub mod speakers;
 pub mod stt;

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api, applyLook, type Config, type Settings } from "$lib/api";
+  import { api, applyLook, type Config, type Provider, type Settings } from "$lib/api";
   import Icon from "$lib/Icon.svelte";
   import DotPreview from "$lib/DotPreview.svelte";
 
@@ -9,7 +9,40 @@
   let saved = $state("");
   let error = $state("");
   let flash = $state(false);
-  let dirty = $derived(cfg !== null && JSON.stringify(cfg) !== saved);
+  // A typed API key goes to Windows Credential Manager on Save, never into the config.
+  let keyDraft = $state("");
+  let dirty = $derived(cfg !== null && (JSON.stringify(cfg) !== saved || keyDraft.trim() !== ""));
+  let testing = $state(false);
+  let tested = $state<{ ok: boolean; text: string } | null>(null);
+
+  const PROVIDERS: { id: Provider; label: string; name: string; model: string; key: string }[] = [
+    { id: "anthropic", label: "Claude", name: "Anthropic", model: "Model (default claude-opus-5-5)", key: "Anthropic API key" },
+    { id: "openai", label: "OpenAI", name: "OpenAI", model: "Model name", key: "OpenAI API key" },
+    { id: "custom", label: "Other", name: "your server", model: "Model name", key: "API key, if the server needs one" },
+  ];
+  let provider = $derived(PROVIDERS.find((p) => p.id === cfg?.cloud.provider) ?? PROVIDERS[0]);
+  let hasKey = $derived(!!settings?.cloud_keys.includes(provider.id));
+
+  function pickProvider(id: Provider) {
+    if (!cfg || cfg.cloud.provider === id) return;
+    cfg.cloud.provider = id;
+    cfg.cloud.model = "";
+    keyDraft = "";
+    tested = null;
+  }
+
+  async function testCloud() {
+    if (!cfg) return;
+    testing = true;
+    tested = null;
+    try {
+      await api.testCloud($state.snapshot(cfg.cloud), keyDraft.trim() || null);
+      tested = { ok: true, text: `Connected to ${provider.name}.` };
+    } catch (e) {
+      tested = { ok: false, text: String(e) };
+    }
+    testing = false;
+  }
 
   let newTerm = $state("");
   let newLiteral = $state("");
@@ -63,6 +96,10 @@
     if (!cfg) return;
     error = "";
     try {
+      if (keyDraft.trim()) {
+        await api.setCloudKey(cfg.cloud.provider, keyDraft);
+        keyDraft = "";
+      }
       await api.saveSettings($state.snapshot(cfg) as Config);
       saved = JSON.stringify(cfg);
       flash = true;
@@ -131,7 +168,11 @@
     <div class="scroll">
       <header>
         <h2>Settings</h2>
-        <p class="sub">Everything runs on this PC. Nothing is sent anywhere.</p>
+        <p class="sub">
+          {cfg.cloud.enabled
+            ? `Everything runs on this PC, except meeting summaries, which ${provider.name} writes.`
+            : "Everything runs on this PC. Nothing is sent anywhere."}
+        </p>
       </header>
 
       <section>
@@ -155,6 +196,13 @@
                 <button class:on={cfg.theme === id} onclick={() => (cfg!.theme = id as Config["theme"])}>{label}</button>
               {/each}
             </div>
+          </div>
+          <div class="row">
+            <div class="label">
+              <div>Sounds</div>
+              <div class="hint">A soft chime when Earshot starts and stops listening.</div>
+            </div>
+            <label class="switch"><input type="checkbox" bind:checked={cfg.sounds} /><span></span></label>
           </div>
           <div class="row">
             <div class="label">
@@ -352,6 +400,47 @@
               {/each}
             </div>
           </div>
+          <div class="row">
+            <div class="label">
+              <div>Summaries written by</div>
+              <div class="hint">
+                {cfg.cloud.enabled
+                  ? `Transcripts go to ${provider.name} to be summarised. Recording and transcription stay on this PC.`
+                  : "The local model. Nothing leaves this PC."}
+              </div>
+            </div>
+            <div class="seg">
+              <button class:on={!cfg.cloud.enabled} onclick={() => (cfg!.cloud.enabled = false)}>This PC</button>
+              <button class:on={cfg.cloud.enabled} onclick={() => (cfg!.cloud.enabled = true)}>Cloud</button>
+            </div>
+          </div>
+          {#if cfg.cloud.enabled}
+            <div class="row stack">
+              <div class="seg full">
+                {#each PROVIDERS as p (p.id)}
+                  <button class:on={cfg.cloud.provider === p.id} onclick={() => pickProvider(p.id)}>{p.label}</button>
+                {/each}
+              </div>
+              <div class="cloud">
+                {#if cfg.cloud.provider === "custom"}
+                  <input class="field" bind:value={cfg.cloud.url} placeholder="Server URL, e.g. http://localhost:11434/v1" spellcheck="false" />
+                {/if}
+                <input class="field" bind:value={cfg.cloud.model} placeholder={provider.model} spellcheck="false" />
+                <div class="key">
+                  <input
+                    class="field"
+                    type="password"
+                    bind:value={keyDraft}
+                    placeholder={hasKey ? "API key saved · type to replace" : provider.key}
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                  <button class="btn" onclick={testCloud} disabled={testing}>{testing ? "Testing…" : "Test"}</button>
+                </div>
+                {#if tested}<div class="hint" class:bad={!tested.ok}>{tested.text}</div>{/if}
+              </div>
+            </div>
+          {/if}
           <div class="row">
             <div class="label">
               <div>Your name</div>
@@ -812,6 +901,21 @@
   .savebar span {
     margin-right: 10px;
     color: var(--muted);
+  }
+  .cloud {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .cloud .key {
+    display: flex;
+    gap: 8px;
+  }
+  .cloud .key .field {
+    flex: 1;
+  }
+  .hint.bad {
+    color: var(--danger);
   }
   .savebar.error span {
     color: var(--danger);
