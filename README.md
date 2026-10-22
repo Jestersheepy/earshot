@@ -12,7 +12,7 @@ Dictation, voice notes and meeting notes, with the speech recognition and the AI
 - **Polished.** A small floating dot, a panel that opens right beside it and expands into a full window, light and dark themes, soft start and stop chimes. It's built to feel like a finished app rather than a script with a tray icon.
 - **Light.** About 18 MB of memory and practically no CPU while it waits. See [Footprint](#footprint).
 
-<p align="center"><a href="docs/earshot-demo.mp4"><img src="docs/demo.webp" alt="Earshot demo: dictating an email, a spoken list becoming bullet points, then a meeting note by the dot" width="100%"></a><br>
+<p align="center"><a href="docs/earshot-demo.mp4"><img src="docs/demo.webp" alt="Earshot demo: the panel and meeting notes in dark mode, then dictating an email and a spoken list that becomes bullet points" width="100%"></a><br>
 <sub>The voice is <a href="https://gradium.ai/phonon">Phonon</a> text-to-speech fed into Earshot as its mic. <a href="docs/earshot-demo.mp4">Watch with sound (MP4)</a></sub></p>
 
 ## What it does
