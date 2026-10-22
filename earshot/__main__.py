@@ -18,7 +18,7 @@ from earshot.audio import Mic, save_wav
 from earshot.hotkeys import Hotkeys
 from earshot.meeting import Meeting, mix, transcript_md
 from earshot.stt.engine import SR, Engine
-from earshot.summarize import available, summarize
+from earshot.summarize import available, summarize, worth_summarizing
 from earshot.ui.circle import Circle
 from earshot.ui.tray import Tray
 
@@ -165,13 +165,13 @@ class App:
         def work():
             duration, lines, me, others = meeting.stop()
             path = notes.new_note_path(cfg["notes_dir"], "Meetings", started)
-            extra = {"participants": "Me, Others" if others else "Me"}
+            extra = {"participants": "Me, Others" if others is not None else "Me"}
             if cfg["keep_wav"]:
                 save_wav(path.with_suffix(".wav"), mix(me, others))
                 extra["audio"] = f"[[{path.with_suffix('.wav').name}]]"
             body = "## Transcript\n\n" + (transcript_md(lines) or "_(no speech detected)_")
             notes.write_note(path, "meeting", started, duration, body, extra)  # saved before the slow part
-            if lines and available(cfg["llm"]):
+            if worth_summarizing(lines) and available(cfg["llm"]):
                 header = {"Title": "Meeting", "Date": started.strftime("%B %d, %Y"),
                           "Time": started.strftime("%I:%M %p"), "Duration": notes.fmt_duration(duration),
                           "Participants": extra["participants"]}

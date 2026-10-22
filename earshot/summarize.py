@@ -13,13 +13,19 @@ SYSTEM = ("You are an expert meeting analyst. Analyze the transcript carefully a
 ASK = ("Provide a brief executive summary (2-3 sentences) of the key outcomes and decisions from this transcript. "
        "Then list the key decisions that were made. Then list the specific action items that were assigned during "
        "this meeting, including who is responsible for each item when mentioned. Use the markdown headings "
-       "'### Summary', '### Decisions' and '### Action items'.")
+       "'### Summary', '### Decisions' and '### Action items'. Only use information stated in the transcript; "
+       "never invent names, dates or tasks. If a section has nothing, write 'None mentioned.'")
+MIN_WORDS = 40  # below this there is nothing to summarize, and small models start inventing a meeting
 ASK_PART = "Provide a detailed summary of this part of the transcript, covering all topics, decisions and action items."
 CHARS_PER_TOKEN = 4
 
 
 def available(llm_cfg):
     return Path(llm_cfg["server"]).exists() and Path(llm_cfg["model"]).exists()
+
+
+def worth_summarizing(lines):
+    return sum(len(x.split()) for _, _, x in lines) >= MIN_WORDS
 
 
 class LlamaServer:

@@ -83,7 +83,7 @@ class Meeting:
             others = None
         self.started = time.monotonic()
         self.segs = [(Segmenter(me, ref=others), "Me", me)]
-        if others:
+        if others is not None:
             self.segs.append((Segmenter(others), "Others", others))
         self._worker = threading.Thread(target=self._run, daemon=True)
         self._worker.start()

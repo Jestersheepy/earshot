@@ -92,7 +92,7 @@ class Loopback:
             self._pa.terminate()
             self._stream = None
         # pad the tail so both tracks end at the same wall-clock time
-        if self.track:
+        if self.track is not None:
             self.track.push(np.zeros(0, np.float32), pad_to_clock=True)
         return self.track
 
