@@ -1,6 +1,6 @@
 """Download everything Earshot needs into ./models (one-time, the only network use).
 
-    python tools/download_models.py            # Bark source + llama.cpp (CPU) + LFM2-Transcript + LFM2-1.2B (Q4_K_M)
+    python tools/download_models.py            # Bark source + ONNX Runtime + llama.cpp (CPU) + LFM2-Transcript + LFM2-1.2B (Q4_K_M)
     python tools/download_models.py --no-llm   # skip the summarizer (~1.7 GB)
 
 The Bark ONNX export itself is a separate step (needs torch once): see README.
@@ -49,7 +49,21 @@ def llama_cpp():
     z.unlink()
 
 
+def onnxruntime_dll():
+    """The app loads onnxruntime.dll at runtime; take it from the onnxruntime wheel in this venv."""
+    import onnxruntime
+
+    if (MODELS / "onnxruntime.dll").exists():
+        print("have onnxruntime.dll")
+        return
+    src = Path(onnxruntime.__file__).parent / "capi" / "onnxruntime.dll"
+    shutil.copy2(src, MODELS / "onnxruntime.dll")
+    print("got  onnxruntime.dll", onnxruntime.__version__)
+
+
 if __name__ == "__main__":
+    MODELS.mkdir(exist_ok=True)
+    onnxruntime_dll()
     for f in BARK_FILES:
         fetch(BARK + f, MODELS / "bark-src" / f)
     if "--no-llm" not in sys.argv:

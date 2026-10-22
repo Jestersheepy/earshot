@@ -45,6 +45,7 @@ export type Config = {
 export type Settings = {
   config: Config;
   models: { dir: string; speech: boolean; server: boolean; summary: boolean; format: boolean };
+  autostart: boolean;
 };
 
 export const api = {
@@ -60,6 +61,7 @@ export const api = {
   deleteHistory: (id: number) => invoke<void>("delete_history", { id }),
   getSettings: () => invoke<Settings>("get_settings"),
   saveSettings: (config: Config) => invoke<void>("save_settings", { config }),
+  setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
 };
 
 export const audioUrl = (path: string) => convertFileSrc(path);

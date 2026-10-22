@@ -8,8 +8,9 @@ from pathlib import Path
 
 import numpy as np
 
-from earshot.config import MODELS_DIR
-from earshot.stt.engine import BarkModel
+from reference_stt import BarkModel
+
+MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 
 
 def load(p):

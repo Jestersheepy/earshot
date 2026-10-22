@@ -555,6 +555,10 @@ impl Controller {
             "open" => crate::window::show(&self.app, "notes"),
             "history" => crate::window::show(&self.app, "history"),
             "settings" => crate::window::show(&self.app, "settings"),
+            "welcome" => {
+                let body = format!("Hold {} to dictate. Right-click the dot for notes and meetings.", pretty_combo(&self.sh.cfg.hotkeys.dictate));
+                self.toast("Earshot is ready", &body, Icon::Mic, Accent::Dictate, Vec::new(), 8.0);
+            }
             "quit" => {
                 self.quitting = true;
                 if let Some(d) = self.dict.take() {

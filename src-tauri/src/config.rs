@@ -134,7 +134,8 @@ impl Config {
         let _ = std::fs::write(p, serde_json::to_vec_pretty(self).unwrap());
     }
 
-    /// %LOCALAPPDATA%\Earshot\models, or the repo's models/ during development.
+    /// %LOCALAPPDATA%\Earshot\models (see tools/install_models.py). Debug builds fall back to the repo's
+    /// models/ so development works before installing.
     pub fn models_dir(&self) -> PathBuf {
         if let Some(d) = &self.models_dir {
             return d.clone();
@@ -143,10 +144,11 @@ impl Config {
             return d.into();
         }
         let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_default().join("Earshot").join("models");
-        if local.join("bark-onnx").exists() {
-            return local;
+        #[cfg(debug_assertions)]
+        if !local.join("bark-onnx").exists() {
+            return PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("models");
         }
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("models")
+        local
     }
 
     pub fn llama_server(&self) -> PathBuf {

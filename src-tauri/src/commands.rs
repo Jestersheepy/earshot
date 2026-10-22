@@ -5,6 +5,7 @@ use std::sync::mpsc::Sender;
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
+use tauri_plugin_autostart::ManagerExt;
 
 use crate::config::Config;
 use crate::controller::AppEvent;
@@ -126,10 +127,11 @@ pub struct Models {
 pub struct Settings {
     config: Config,
     models: Models,
+    autostart: bool,
 }
 
 #[tauri::command]
-pub fn get_settings() -> Settings {
+pub fn get_settings(app: AppHandle) -> Settings {
     let cfg = Config::load();
     let dir = cfg.models_dir();
     let models = Models {
@@ -139,7 +141,13 @@ pub fn get_settings() -> Settings {
         summary: cfg.llm_model(&cfg.llm.summary_model).exists(),
         format: cfg.llm_model(&cfg.llm.format_model).exists(),
     };
-    Settings { config: cfg, models }
+    Settings { config: cfg, models, autostart: app.autolaunch().is_enabled().unwrap_or(false) }
+}
+
+#[tauri::command]
+pub fn set_autostart(enabled: bool, app: AppHandle) -> R<()> {
+    let a = app.autolaunch();
+    if enabled { a.enable() } else { a.disable() }.map_err(err)
 }
 
 /// Validate, save, and hand to the running app (hotkeys rebind immediately).

@@ -21,7 +21,17 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis"],
+    "publisher": "Earshot",
+    "shortDescription": "Local dictation, voice notes and meeting notes",
+    "resources": {
+      "../models/onnxruntime.dll": "onnxruntime.dll"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

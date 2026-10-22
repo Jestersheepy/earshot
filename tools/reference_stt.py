@@ -1,6 +1,7 @@
-"""Bark speech-to-text on CPU: ONNX encoder + numpy TDT greedy decoder. No torch.
+"""Bark speech-to-text on CPU: ONNX encoder + numpy TDT greedy decoder. No torch. The reference the Rust
+port (crates/core/src/stt.rs) is tested against; see make_golden.py.
 
-    python -m earshot.stt.engine recording.wav
+    python tools/reference_stt.py recording.wav
 """
 import json
 import threading
@@ -175,7 +176,7 @@ if __name__ == "__main__":
     import sys
     import wave as wavmod
 
-    from earshot.config import MODELS_DIR
+    MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 
     with wavmod.open(sys.argv[1]) as f:
         sr, ch = f.getframerate(), f.getnchannels()

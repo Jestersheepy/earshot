@@ -283,6 +283,29 @@
         <div class="card">
           <div class="row">
             <div class="label">
+              <div>Start with Windows</div>
+              <div class="hint">Earshot waits quietly in the tray, ready for your shortcuts.</div>
+            </div>
+            <label class="switch">
+              <input
+                type="checkbox"
+                checked={settings!.autostart}
+                onchange={async (e) => {
+                  const box = e.currentTarget;
+                  const on = box.checked;
+                  try {
+                    await api.setAutostart(on);
+                    settings!.autostart = on;
+                  } catch (err) {
+                    error = String(err);
+                    box.checked = !on;
+                  }
+                }}
+              /><span></span>
+            </label>
+          </div>
+          <div class="row">
+            <div class="label">
               <div>Load speech model at startup</div>
               <div class="hint">Faster first dictation, about 900 MB of memory until it unloads.</div>
             </div>
