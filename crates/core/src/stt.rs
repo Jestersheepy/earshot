@@ -278,7 +278,14 @@ impl BarkModel {
 
 /// ONNX Runtime is loaded from onnxruntime.dll at runtime (the static prebuilt needs a newer MSVC STL).
 /// Looked up in: $ORT_DYLIB_PATH, next to the exe, then the models folder.
+/// ort allows one environment per process, ever (even after it's dropped), so it's built once and shared:
+/// the speech model reloads after idling, and the speaker model loads alongside it.
 pub(crate) fn ort_env(model_dir: &Path) -> Result<ort::environment::Environment> {
+    static ENV: parking_lot::Mutex<Option<ort::environment::Environment>> = parking_lot::Mutex::new(None);
+    let mut env = ENV.lock();
+    if let Some(e) = env.as_ref() {
+        return Ok(e.clone());
+    }
     static DLL: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     let dll = DLL.get_or_init(|| {
         let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf));
@@ -290,7 +297,8 @@ pub(crate) fn ort_env(model_dir: &Path) -> Result<ort::environment::Environment>
             .find(|p| p.exists())
             .unwrap_or_else(|| PathBuf::from("onnxruntime.dll"))
     });
-    Ok(ort::init_from(dll).map_err(|e| anyhow::anyhow!("loading {}: {e}", dll.display()))?.build()?)
+    let built = ort::init_from(dll).map_err(|e| anyhow::anyhow!("loading {}: {e}", dll.display()))?.build()?;
+    Ok(env.insert(built).clone())
 }
 
 fn argmax(x: &[f32]) -> usize {
