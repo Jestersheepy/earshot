@@ -3,6 +3,8 @@
 pub mod menu;
 pub mod paint;
 pub mod pill;
+pub mod theme;
 pub mod ui;
 
-pub use ui::{Overlay, UiEvent, system_dark};
+pub use theme::system_dark;
+pub use ui::{Overlay, UiEvent};

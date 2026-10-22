@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use earshot_core::audio::{Capture, Source, Track};
-use earshot_core::segment::{Line, Segmenter, capitalize, drop_echo, merge_turns};
+use earshot_core::segment::{Line, Segmenter, capitalize, drop_echo};
 use earshot_core::stt::{Engine, SR};
 use parking_lot::Mutex;
 
@@ -23,9 +23,11 @@ pub struct Meeting {
 
 pub struct Finished {
     pub duration_s: f32,
+    /// Echo removed, turns not yet merged (speakers are told apart first).
     pub lines: Vec<Line>,
+    pub me: Vec<f32>,
+    pub others: Option<Vec<f32>>,
     pub mix: Vec<f32>,
-    pub had_system: bool,
 }
 
 impl Meeting {
@@ -70,10 +72,11 @@ impl Meeting {
         }
         let mut lines = std::mem::take(&mut *self.lines.lock());
         lines.sort_by(|a, b| a.start.total_cmp(&b.start));
-        let lines = merge_turns(drop_echo(lines));
-        let mut mix = me.read(0, None);
+        let lines = drop_echo(lines);
+        let me = me.read(0, None);
+        let others = others.map(|o| o.read(0, None));
+        let mut mix = me.clone();
         if let Some(o) = &others {
-            let o = o.read(0, None);
             if o.len() > mix.len() {
                 mix.resize(o.len(), 0.0);
             }
@@ -81,7 +84,7 @@ impl Meeting {
                 *m = (*m + v).clamp(-1.0, 1.0);
             }
         }
-        Finished { duration_s, lines, mix, had_system: others.is_some() }
+        Finished { duration_s, lines, me, others, mix }
     }
 }
 
@@ -104,28 +107,4 @@ fn drain(segs: &mut [(Segmenter, &str)], engine: &Engine, lines: &Mutex<Vec<Line
 
 pub fn worth_summarizing(lines: &[Line]) -> bool {
     lines.iter().map(|l| l.text.split_whitespace().count()).sum::<usize>() >= crate::text::SUMMARY_MIN_WORDS
-}
-
-/// Executive summary, decisions and action items. Long transcripts are summarized in parts first.
-pub fn summarize(pool: &crate::llm::Pool, model: &std::path::Path, ctx: u32, lines: &[Line], head: &str) -> Result<String> {
-    use crate::text::{SUMMARY_ASK, SUMMARY_PART, SUMMARY_SYSTEM};
-    let transcript: Vec<String> = lines.iter().map(|l| format!("**{}**: {}", l.speaker, l.text)).collect();
-    let budget = (ctx as f32 * 0.6) as usize * 3; // ~3 chars/token; room for the prompt and the answer
-    let mut parts: Vec<Vec<&str>> = vec![Vec::new()];
-    let mut size = 0;
-    for line in &transcript {
-        if size + line.len() > budget && !parts.last().unwrap().is_empty() {
-            parts.push(Vec::new());
-            size = 0;
-        }
-        parts.last_mut().unwrap().push(line);
-        size += line.len() + 1;
-    }
-    let ask = |q: &str, body: &str| pool.chat(model, ctx, SUMMARY_SYSTEM, &format!("{q}\n\n{head}\n----------\n{body}"), 1024, 0.3);
-    if parts.len() == 1 {
-        return ask(SUMMARY_ASK, &parts[0].join("\n"));
-    }
-    let partials = parts.iter().map(|p| ask(SUMMARY_PART, &p.join("\n"))).collect::<Result<Vec<_>>>()?;
-    let merged = partials.iter().enumerate().map(|(i, p)| format!("Part {}:\n{p}", i + 1)).collect::<Vec<_>>().join("\n\n");
-    ask(&format!("{SUMMARY_ASK}\n\nThe transcript was long, so here are summaries of its parts in order."), &merged)
 }

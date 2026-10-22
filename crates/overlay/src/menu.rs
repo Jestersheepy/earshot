@@ -3,6 +3,7 @@
 use tiny_skia::Pixmap;
 
 use crate::paint::*;
+use crate::theme::{palette, style};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Icon {
@@ -27,88 +28,143 @@ pub struct MenuItem {
     pub separator_before: bool,
     /// Draw the icon in the accent colour (e.g. "Stop meeting" while recording).
     pub danger: bool,
+    /// A segmented row instead of an action: (choice id, label). Picking one emits "{id}:{choice id}" and
+    /// keeps the menu open.
+    pub choices: Vec<(String, String)>,
+    pub selected: usize,
 }
 
-#[derive(Clone, Copy)]
-pub struct Theme {
-    pub dark: bool,
+impl MenuItem {
+    pub fn action(id: &str, label: &str, hint: &str, icon: Icon) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            hint: hint.into(),
+            icon,
+            separator_before: false,
+            danger: false,
+            choices: Vec::new(),
+            selected: 0,
+        }
+    }
+
+    pub fn choice(id: &str, label: &str, choices: &[(&str, &str)], selected: &str) -> Self {
+        Self {
+            choices: choices.iter().map(|(i, l)| (i.to_string(), l.to_string())).collect(),
+            selected: choices.iter().position(|(i, _)| *i == selected).unwrap_or(0),
+            ..Self::action(id, label, "", Icon::Mic)
+        }
+    }
+
+    fn height(&self) -> f32 {
+        if self.choices.is_empty() { ITEM_H } else { CHOICE_H }
+    }
 }
 
-impl Theme {
-    fn bg(self) -> Rgba {
-        if self.dark { Rgba(36, 37, 42, 250) } else { Rgba(252, 252, 253, 250) }
-    }
-    fn border(self) -> Rgba {
-        if self.dark { Rgba(255, 255, 255, 26) } else { Rgba(0, 0, 0, 22) }
-    }
-    pub fn text(self) -> Rgba {
-        if self.dark { Rgba(242, 243, 246, 255) } else { Rgba(28, 29, 33, 255) }
-    }
-    pub fn muted(self) -> Rgba {
-        if self.dark { Rgba(150, 155, 166, 255) } else { Rgba(120, 125, 135, 255) }
-    }
-    fn hover(self) -> Rgba {
-        if self.dark { Rgba(255, 255, 255, 20) } else { Rgba(0, 0, 0, 13) }
-    }
-    fn rule(self) -> Rgba {
-        if self.dark { Rgba(255, 255, 255, 18) } else { Rgba(0, 0, 0, 14) }
-    }
-}
-
-pub const MENU_W: f32 = 252.0;
-const ITEM_H: f32 = 34.0;
+pub const MENU_W: f32 = 268.0;
+const ITEM_H: f32 = 32.0;
+const CHOICE_H: f32 = 46.0;
+const SEG_H: f32 = 28.0;
 const PAD: f32 = 6.0;
 const SEP_H: f32 = 9.0;
-pub const MARGIN: f32 = 14.0; // room for the shadow
+pub const MARGIN: f32 = 16.0; // room for the shadow
 
 pub fn menu_height(items: &[MenuItem]) -> f32 {
-    2.0 * PAD + items.iter().map(|i| ITEM_H + if i.separator_before { SEP_H } else { 0.0 }).sum::<f32>()
+    2.0 * PAD + items.iter().map(|i| i.height() + if i.separator_before { SEP_H } else { 0.0 }).sum::<f32>()
 }
 
-/// Item index at logical y within the panel (panel origin at MARGIN,MARGIN).
-pub fn item_at(items: &[MenuItem], x: f32, y: f32) -> Option<usize> {
+/// Top of each item (logical, window coords).
+fn tops(items: &[MenuItem]) -> Vec<f32> {
+    let mut top = MARGIN + PAD;
+    items
+        .iter()
+        .map(|it| {
+            if it.separator_before {
+                top += SEP_H;
+            }
+            let t = top;
+            top += it.height();
+            t
+        })
+        .collect()
+}
+
+/// Segment rectangles of a choice row whose top is `top` (logical).
+fn segments(it: &MenuItem, top: f32) -> Vec<(f32, f32, f32, f32)> {
+    let f = &fonts().semibold;
+    let widths: Vec<f32> = it.choices.iter().map(|(_, l)| text_width(f, 12.5, l) + 22.0).collect();
+    let mut x = MARGIN + MENU_W - PAD - 6.0 - widths.iter().sum::<f32>() - 4.0;
+    let y = top + (CHOICE_H - SEG_H) / 2.0 + 2.0;
+    widths
+        .iter()
+        .map(|w| {
+            let r = (x + 2.0, y + 2.0, *w, SEG_H - 4.0);
+            x += w;
+            r
+        })
+        .collect()
+}
+
+/// The item at logical (x, y), and for a choice row the segment under the cursor.
+pub fn hit(items: &[MenuItem], x: f32, y: f32) -> Option<(usize, Option<usize>)> {
     if x < MARGIN || x > MARGIN + MENU_W {
         return None;
     }
-    let mut top = MARGIN + PAD;
-    for (i, it) in items.iter().enumerate() {
-        if it.separator_before {
-            top += SEP_H;
-        }
-        if y >= top && y < top + ITEM_H {
-            return Some(i);
-        }
-        top += ITEM_H;
-    }
-    None
+    let tops = tops(items);
+    let i = items.iter().zip(&tops).position(|(it, &t)| y >= t && y < t + it.height())?;
+    let seg = segments(&items[i], tops[i]).iter().position(|&(sx, sy, sw, sh)| x >= sx && x < sx + sw && y >= sy - 4.0 && y < sy + sh + 4.0);
+    Some((i, seg))
 }
 
-pub fn draw_menu(pm: &mut Pixmap, items: &[MenuItem], hover: Option<usize>, theme: Theme, s: f32) {
+pub fn draw_menu(pm: &mut Pixmap, items: &[MenuItem], hover: Option<(usize, Option<usize>)>, s: f32) {
+    let pal = palette();
     let (x, y, w, h) = (MARGIN * s, MARGIN * s, MENU_W * s, menu_height(items) * s);
-    let panel = capsule(x, y, w, h, 12.0 * s);
-    shadow(pm, &panel, 18.0 * s, 6.0 * s, Rgba(0, 0, 0, if theme.dark { 140 } else { 70 }));
-    fill(pm, &panel, theme.bg());
-    stroke(pm, &capsule(x + 0.5 * s, y + 0.5 * s, w - s, h - s, 11.5 * s), theme.border(), s);
-    let mut top = y + PAD * s;
-    for (i, it) in items.iter().enumerate() {
+    let panel = capsule(x, y, w, h, 14.0 * s);
+    shadow(pm, &panel, 22.0 * s, 8.0 * s, pal.shadow);
+    fill(pm, &panel, pal.bg);
+    stroke(pm, &capsule(x + 0.5 * s, y + 0.5 * s, w - s, h - s, 13.5 * s), pal.border, s);
+    let f = fonts();
+    let accent = style().accent;
+    for (i, (it, &t)) in items.iter().zip(&tops(items)).enumerate() {
+        let top = t * s;
         if it.separator_before {
-            let ly = top + SEP_H * s / 2.0;
-            line(pm, &[(x + 12.0 * s, ly), (x + w - 12.0 * s, ly)], theme.rule(), s);
-            top += SEP_H * s;
+            let ly = top - SEP_H * s / 2.0;
+            line(pm, &[(x + 14.0 * s, ly), (x + w - 14.0 * s, ly)], pal.rule, s);
         }
-        if hover == Some(i) {
-            fill(pm, &capsule(x + PAD * s, top, w - 2.0 * PAD * s, ITEM_H * s, 8.0 * s), theme.hover());
+        let cy = top + it.height() * s / 2.0;
+        if !it.choices.is_empty() {
+            text(pm, &f.regular, 12.5 * s, x + 16.0 * s, cy + 6.4 * s, &it.label, pal.muted);
+            let segs = segments(it, t);
+            let (fx, fy) = (segs[0].0 - 2.0, segs[0].1 - 2.0);
+            let fw = segs.iter().map(|g| g.2).sum::<f32>() + 4.0;
+            fill(pm, &capsule(fx * s, fy * s, fw * s, SEG_H * s, 8.0 * s), pal.hover);
+            for (k, ((_, label), &(sx, sy, sw, sh))) in it.choices.iter().zip(&segs).enumerate() {
+                let on = k == it.selected;
+                let hov = hover == Some((i, Some(k)));
+                if on {
+                    let r = capsule(sx * s, sy * s, sw * s, sh * s, 6.5 * s);
+                    shadow(pm, &r, 3.0 * s, 0.5 * s, Rgba(0, 0, 0, 30));
+                    fill(pm, &r, pal.raised);
+                } else if hov {
+                    fill(pm, &capsule(sx * s, sy * s, sw * s, sh * s, 6.5 * s), pal.hover);
+                }
+                let font = if on { &f.semibold } else { &f.regular };
+                let tw = text_width(font, 12.5 * s, label);
+                let tc = if on { pal.text } else { pal.muted };
+                text(pm, font, 12.5 * s, sx * s + (sw * s - tw) / 2.0, (sy + sh / 2.0 + 4.4) * s, label, tc);
+            }
+            continue;
         }
-        let cy = top + ITEM_H * s / 2.0;
-        let ic = if it.danger { Rgba(240, 74, 74, 255) } else { theme.muted() };
+        if hover.map(|h| h.0) == Some(i) {
+            fill(pm, &capsule(x + PAD * s, top, w - 2.0 * PAD * s, ITEM_H * s, 8.0 * s), pal.hover);
+        }
+        let ic = if it.danger { Rgba(229, 72, 77, 255) } else if hover.map(|h| h.0) == Some(i) { accent } else { pal.muted };
         draw_icon(pm, it.icon, x + 24.0 * s, cy, s, ic);
-        let f = fonts();
-        text(pm, &f.regular, 13.5 * s, x + 44.0 * s, cy + 4.8 * s, &it.label, theme.text());
+        text(pm, &f.regular, 13.5 * s, x + 44.0 * s, cy + 4.8 * s, &it.label, pal.text);
         if !it.hint.is_empty() {
-            let hw = text_width(&f.regular, 12.0 * s, &it.hint);
-            text(pm, &f.regular, 12.0 * s, x + w - 16.0 * s - hw, cy + 4.3 * s, &it.hint, theme.muted());
+            let hw = text_width(&f.regular, 11.5 * s, &it.hint);
+            text(pm, &f.regular, 11.5 * s, x + w - 16.0 * s - hw, cy + 4.2 * s, &it.hint, pal.muted.alpha(0.85));
         }
-        top += ITEM_H * s;
     }
 }
 
@@ -246,12 +302,13 @@ pub fn toast_layout(t: &ToastSpec) -> ToastHit {
     ToastHit { buttons, close: (x + w - 14.0, y + 14.0, 9.0) }
 }
 
-pub fn draw_toast(pm: &mut Pixmap, t: &ToastSpec, theme: Theme, s: f32, hover_btn: Option<usize>, hover: bool, progress: f32) {
+pub fn draw_toast(pm: &mut Pixmap, t: &ToastSpec, s: f32, hover_btn: Option<usize>, hover: bool, progress: f32) {
+    let theme = palette();
     let (x, y, w, h) = (MARGIN * s, MARGIN * s, TOAST_W * s, toast_height(t) * s);
-    let panel = capsule(x, y, w, h, 14.0 * s);
-    shadow(pm, &panel, 20.0 * s, 6.0 * s, Rgba(0, 0, 0, if theme.dark { 150 } else { 80 }));
-    fill(pm, &panel, theme.bg());
-    stroke(pm, &capsule(x + 0.5 * s, y + 0.5 * s, w - s, h - s, 13.5 * s), theme.border(), s);
+    let panel = capsule(x, y, w, h, 16.0 * s);
+    shadow(pm, &panel, 22.0 * s, 8.0 * s, theme.shadow);
+    fill(pm, &panel, theme.bg);
+    stroke(pm, &capsule(x + 0.5 * s, y + 0.5 * s, w - s, h - s, 15.5 * s), theme.border, s);
     // icon badge
     let (ix, iy) = (x + 32.0 * s, y + 33.0 * s);
     fill(pm, &circle(ix, iy, 17.0 * s), t.accent.alpha(0.16));
@@ -261,14 +318,14 @@ pub fn draw_toast(pm: &mut Pixmap, t: &ToastSpec, theme: Theme, s: f32, hover_bt
     let reserve = if inline_button(t) { toast_layout(t).buttons[0].2 + 16.0 } else { 30.0 };
     let body = ellipsize(&f.regular, 13.0, &t.body, TOAST_W - 60.0 - reserve);
     let title = ellipsize(&f.semibold, 14.0, &t.title, TOAST_W - 60.0 - reserve);
-    text(pm, &f.semibold, 14.0 * s, x + 60.0 * s, y + 29.0 * s, &title, theme.text());
-    text(pm, &f.regular, 13.0 * s, x + 60.0 * s, y + 48.0 * s, &body, theme.muted());
+    text(pm, &f.semibold, 14.0 * s, x + 60.0 * s, y + 29.0 * s, &title, theme.text);
+    text(pm, &f.regular, 13.0 * s, x + 60.0 * s, y + 48.0 * s, &body, theme.muted);
     if hover && has_close(t) {
         let (cx, cy, r) = toast_layout(t).close;
-        fill(pm, &circle(cx * s, cy * s, r * s), theme.hover());
+        fill(pm, &circle(cx * s, cy * s, r * s), theme.hover);
         let k = 3.2 * s;
-        line(pm, &[(cx * s - k, cy * s - k), (cx * s + k, cy * s + k)], theme.muted(), 1.4 * s);
-        line(pm, &[(cx * s + k, cy * s - k), (cx * s - k, cy * s + k)], theme.muted(), 1.4 * s);
+        line(pm, &[(cx * s - k, cy * s - k), (cx * s + k, cy * s + k)], theme.muted, 1.4 * s);
+        line(pm, &[(cx * s + k, cy * s - k), (cx * s - k, cy * s + k)], theme.muted, 1.4 * s);
     }
     for (i, ((_, label), b)) in t.buttons.iter().zip(toast_layout(t).buttons).enumerate() {
         let r = capsule(b.0 * s, b.1 * s, b.2 * s, b.3 * s, b.3 * s / 2.0);
@@ -278,8 +335,8 @@ pub fn draw_toast(pm: &mut Pixmap, t: &ToastSpec, theme: Theme, s: f32, hover_bt
             fill(pm, &r, if hov { t.accent.alpha(0.88) } else { t.accent });
             Rgba(255, 255, 255, 255)
         } else {
-            fill(pm, &r, if hov { theme.hover().alpha(2.0) } else { theme.hover() });
-            theme.text()
+            fill(pm, &r, if hov { theme.hover.alpha(2.0) } else { theme.hover });
+            theme.text
         };
         let tw = text_width(&f.semibold, 13.0 * s, label);
         text(pm, &f.semibold, 13.0 * s, b.0 * s + (b.2 * s - tw) / 2.0, (b.1 + b.3 / 2.0 + 4.6) * s, label, tc);

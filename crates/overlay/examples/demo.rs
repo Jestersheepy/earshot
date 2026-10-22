@@ -39,8 +39,7 @@ fn main() {
         while let Ok(e) = rx.try_recv() {
             println!("event {e:?}");
             if let UiEvent::ContextMenu { x, y } = e {
-                ov.menu(vec![MenuItem { id: "note".into(), label: "New voice note".into(), hint: "Ctrl+Alt+N".into(),
-                    icon: Icon::Mic, separator_before: false, danger: false }], x, y);
+                ov.menu(vec![MenuItem::action("note", "New voice note", "Ctrl+Alt+N", Icon::Mic)], x, y);
             }
         }
         std::thread::sleep(Duration::from_millis(30));

@@ -129,6 +129,21 @@
     color: var(--muted);
     font-size: 13px;
   }
+  /* compact panel */
+  @media (max-width: 560px) {
+    .wrap {
+      padding: 0 12px;
+    }
+    header {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 10px;
+      padding: 14px 0 10px;
+    }
+    h2 {
+      font-size: 18px;
+    }
+  }
   .filter {
     display: flex;
     align-items: center;
@@ -143,7 +158,7 @@
   }
   .filter:focus-within {
     border-color: var(--accent);
-    box-shadow: 0 0 0 3px rgba(91, 140, 255, 0.18);
+    box-shadow: 0 0 0 3px var(--accent-soft);
   }
   .filter input {
     flex: 1;
@@ -197,7 +212,7 @@
     padding: 0 7px;
     border-radius: 10px;
     color: var(--accent-text);
-    background: var(--selected);
+    background: var(--accent-soft);
   }
   .tag.cmd {
     color: var(--command);

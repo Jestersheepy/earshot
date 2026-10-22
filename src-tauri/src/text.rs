@@ -262,15 +262,6 @@ pub fn tidy_llm(out: &str) -> String {
     s.to_string()
 }
 
-pub const SUMMARY_SYSTEM: &str =
-    "You are an expert meeting analyst. Analyze the transcript carefully and provide clear, accurate information based on the content.";
-pub const SUMMARY_ASK: &str = "Provide a brief executive summary (2-3 sentences) of the key outcomes and decisions from this transcript. \
-Then list the key decisions that were made. Then list the specific action items that were assigned during this meeting, \
-including who is responsible for each item when mentioned. Use the markdown headings '### Summary', '### Decisions' and \
-'### Action items'. Only use information stated in the transcript; never invent names, dates or tasks. If a section has \
-nothing, write 'None mentioned.'";
-pub const SUMMARY_PART: &str =
-    "Provide a detailed summary of this part of the transcript, covering all topics, decisions and action items.";
 /// Below this there is nothing to summarize, and small models start inventing a meeting.
 pub const SUMMARY_MIN_WORDS: usize = 40;
 

@@ -12,6 +12,7 @@ use crate::controller::AppEvent;
 use crate::history::{History, Row};
 use crate::library::{self, NoteDetail, NoteMeta, SearchHit};
 use crate::llm::Pool;
+use crate::summary::Mode;
 
 pub struct AppState {
     pub pool: Pool,
@@ -49,6 +50,68 @@ pub fn rename_note(path: String, title: String) -> R<()> {
     library::set_front(&note(&path)?, "title", title.trim()).map_err(err)
 }
 
+/// Rename a meeting speaker everywhere in the note, and remember their voice for next time.
+#[tauri::command]
+pub fn rename_speaker(path: String, from: String, to: String, state: State<'_, AppState>) -> R<()> {
+    let (p, to) = (note(&path)?, to.trim().to_string());
+    if to.is_empty() || to.contains([':', '*', '\n', ',']) {
+        return Err("Names can't be empty or contain : * or commas.".into());
+    }
+    let md = std::fs::read_to_string(&p).map_err(err)?.replace("\r\n", "\n");
+    std::fs::write(&p, crate::speakers::rename_in_note(&md, &from, &to)).map_err(err)?;
+    if let Some(h) = &state.history {
+        let cfg = Config::load();
+        let learn = to != cfg.your_name && to != "Me";
+        h.name_speaker(&p.to_string_lossy(), &from, &to, learn).map_err(err)?;
+    }
+    Ok(())
+}
+
+/// Names the transcript gives away for "Speaker N" labels ("Thanks, Sarah"), from the local model. Only
+/// names that appear in the transcript are returned.
+#[tauri::command]
+pub async fn suggest_speaker_names(path: String, state: State<'_, AppState>) -> R<Vec<(String, String)>> {
+    let p = note(&path)?;
+    let pool = state.pool.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let cfg = Config::load();
+        let lines = library::transcript(&p).map_err(err)?;
+        let labels: Vec<String> = crate::speakers::participants(&lines).into_iter().filter(|s| s.starts_with("Speaker ")).collect();
+        if labels.is_empty() {
+            return Ok(Vec::new());
+        }
+        let model = cfg.llm_model(&cfg.llm.summary_model);
+        let text = crate::summary::transcript_text(&lines).join("\n");
+        let ask = format!(
+            "Some speakers in this meeting transcript are labelled {}. For each of those labels, give the person's name only \
+             if the transcript makes it clear: they introduce themselves, are addressed by name just before they speak, or \
+             are thanked or answered by name just after. Answer one line per label as 'Speaker N: Name', or 'Speaker N: unknown'.\n\n{text}",
+            labels.join(", ")
+        );
+        let answer = pool.chat(&model, cfg.llm.ctx, "You read meeting transcripts carefully and never guess.", &ask, 200, 0.0).map_err(err)?;
+        let lower = text.to_lowercase();
+        Ok(answer
+            .lines()
+            .filter_map(|l| l.trim().trim_start_matches(['-', '*', ' ']).split_once(':'))
+            .map(|(k, v)| (k.trim().to_string(), v.trim().trim_matches(['*', '.', ' ']).to_string()))
+            .filter(|(k, v)| labels.contains(k) && !v.is_empty() && !v.eq_ignore_ascii_case("unknown") && v.len() < 40)
+            .filter(|(_, v)| lower.contains(&v.to_lowercase()))
+            .collect())
+    })
+    .await
+    .map_err(err)?
+}
+
+#[tauri::command]
+pub fn list_voices(state: State<'_, AppState>) -> R<Vec<(String, i64)>> {
+    state.history.as_ref().map_or(Ok(Vec::new()), |h| h.voice_names().map_err(err))
+}
+
+#[tauri::command]
+pub fn forget_voice(name: String, state: State<'_, AppState>) -> R<()> {
+    state.history.as_ref().map_or(Ok(()), |h| h.forget_voice(&name).map_err(err))
+}
+
 /// To the Recycle Bin, with its recording.
 #[tauri::command]
 pub fn delete_note(path: String) -> R<()> {
@@ -62,7 +125,7 @@ pub fn delete_note(path: String) -> R<()> {
 }
 
 #[tauri::command]
-pub async fn resummarize(path: String, state: State<'_, AppState>) -> R<String> {
+pub async fn resummarize(path: String, mode: Mode, state: State<'_, AppState>) -> R<String> {
     let p = note(&path)?;
     let pool = state.pool.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -77,8 +140,8 @@ pub async fn resummarize(path: String, state: State<'_, AppState>) -> R<String> 
         }
         let d = library::detail(&p).map_err(err)?;
         let head = format!("Title: {}\nDate: {}\nDuration: {}", d.meta.title, d.meta.date, d.meta.duration);
-        let summary = crate::meeting::summarize(&pool, &model, cfg.llm.ctx, &lines, &head).map_err(err)?;
-        library::set_summary(&p, &summary).map_err(err)?;
+        let summary = crate::summary::summarize(&pool, &model, cfg.llm.ctx, &lines, &head, mode).map_err(err)?;
+        library::set_summary(&p, mode, &summary).map_err(err)?;
         Ok(summary)
     })
     .await
@@ -109,6 +172,11 @@ pub fn list_history(query: String, limit: u32, state: State<'_, AppState>) -> R<
 }
 
 #[tauri::command]
+pub fn history_stats(state: State<'_, AppState>) -> R<crate::history::Stats> {
+    state.history.as_ref().map_or(Ok(Default::default()), |h| h.stats().map_err(err))
+}
+
+#[tauri::command]
 pub fn delete_history(id: i64, state: State<'_, AppState>) -> R<()> {
     state.history.as_ref().map_or(Ok(()), |h| h.delete(id).map_err(err))
 }
@@ -128,6 +196,8 @@ pub struct Settings {
     config: Config,
     models: Models,
     autostart: bool,
+    /// The dot's accent as "#rrggbb" ("auto" resolved to the Windows accent).
+    accent: String,
 }
 
 #[tauri::command]
@@ -141,7 +211,42 @@ pub fn get_settings(app: AppHandle) -> Settings {
         summary: cfg.llm_model(&cfg.llm.summary_model).exists(),
         format: cfg.llm_model(&cfg.llm.format_model).exists(),
     };
-    Settings { config: cfg, models, autostart: app.autolaunch().is_enabled().unwrap_or(false) }
+    let accent = match cfg.pill.accent.as_str() {
+        "auto" => earshot_overlay::theme::windows_accent(),
+        hex => earshot_overlay::theme::parse_hex(hex),
+    }
+    .unwrap_or(earshot_overlay::theme::DEFAULT_ACCENT);
+    let accent = format!("#{:02x}{:02x}{:02x}", accent.0, accent.1, accent.2);
+    Settings { config: cfg, models, autostart: app.autolaunch().is_enabled().unwrap_or(false), accent }
+}
+
+/// Start or stop a voice note or meeting from the panel ("note" | "meeting").
+#[tauri::command]
+pub fn run_action(action: String, state: State<'_, AppState>) -> R<()> {
+    if !matches!(action.as_str(), "note" | "meeting") {
+        return Err(format!("unknown action {action}"));
+    }
+    state.tx.send(AppEvent::Action(action)).map_err(err)
+}
+
+#[tauri::command]
+pub fn panel_expand(expanded: bool, app: AppHandle) {
+    crate::window::set_expanded(&app, expanded);
+}
+
+#[tauri::command]
+pub fn panel_pin(pinned: bool, app: AppHandle) {
+    crate::window::set_pinned(&app, pinned);
+}
+
+#[tauri::command]
+pub fn panel_close(app: AppHandle) {
+    crate::window::close(&app);
+}
+
+#[tauri::command]
+pub fn panel_minimize(app: AppHandle) {
+    crate::window::minimize(&app);
 }
 
 #[tauri::command]

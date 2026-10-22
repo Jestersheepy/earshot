@@ -47,7 +47,7 @@ impl Default for Llm {
     fn default() -> Self {
         Self {
             server: None,
-            summary_model: "LFM2-2.6B-Transcript-Q4_K_M.gguf".into(),
+            summary_model: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf".into(),
             format_model: "LFM2-1.2B-Q4_K_M.gguf".into(),
             ctx: 32768,
             threads: 8,
@@ -56,12 +56,37 @@ impl Default for Llm {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct Pill {
     pub x: Option<i32>,
     pub y: Option<i32>,
     pub hidden: bool,
+    /// "small" | "medium" | "large"
+    pub size: String,
+    /// "dot" | "mic" | "breathing"
+    pub idle: String,
+    /// "auto" (the Windows accent) or "#RRGGBB".
+    pub accent: String,
+    /// Grow into a hint bar on hover.
+    pub peek: bool,
+    /// What a left click does: "dictate" | "note" | "meeting" | "panel".
+    pub click: String,
+}
+
+impl Default for Pill {
+    fn default() -> Self {
+        Self {
+            x: None,
+            y: None,
+            hidden: false,
+            size: "medium".into(),
+            idle: "dot".into(),
+            accent: "auto".into(),
+            peek: true,
+            click: "dictate".into(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -92,6 +117,14 @@ pub struct Config {
     /// Meeting detection per app: "ask" | "always" | "never". Unlisted apps: ask.
     pub meeting_apps: BTreeMap<String, String>,
     pub detect_meetings: bool,
+    /// Depth of meeting summaries made when a meeting is saved.
+    pub summary_mode: crate::summary::Mode,
+    /// Tell voices apart in meetings (Speaker 1, 2, … and voices you've named before).
+    pub detect_speakers: bool,
+    /// Your label in meeting transcripts.
+    pub your_name: String,
+    /// "system" | "light" | "dark"
+    pub theme: String,
 }
 
 impl Default for Config {
@@ -115,6 +148,10 @@ impl Default for Config {
             snippets: Vec::new(),
             meeting_apps: BTreeMap::new(),
             detect_meetings: true,
+            summary_mode: Default::default(),
+            detect_speakers: true,
+            your_name: "Me".into(),
+            theme: "system".into(),
         }
     }
 }
@@ -125,7 +162,12 @@ pub fn path() -> PathBuf {
 
 impl Config {
     pub fn load() -> Self {
-        std::fs::read(path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+        let mut cfg: Self = std::fs::read(path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        // v2.1 moved summaries to a stronger model; follow the default unless someone picked their own
+        if cfg.llm.summary_model == "LFM2-2.6B-Transcript-Q4_K_M.gguf" {
+            cfg.llm.summary_model = Llm::default().summary_model;
+        }
+        cfg
     }
 
     pub fn save(&self) {
@@ -153,6 +195,10 @@ impl Config {
 
     pub fn llama_server(&self) -> PathBuf {
         self.llm.server.clone().unwrap_or_else(|| self.models_dir().join("llama.cpp").join("llama-server.exe"))
+    }
+
+    pub fn speaker_dir(&self) -> PathBuf {
+        self.models_dir().join("speaker")
     }
 
     pub fn llm_model(&self, name: &str) -> PathBuf {

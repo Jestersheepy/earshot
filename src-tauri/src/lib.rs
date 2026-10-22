@@ -2,10 +2,12 @@ mod commands;
 pub mod config;
 mod controller;
 mod history;
-mod library;
+pub mod library;
 pub mod llm;
 mod meeting;
 mod notes;
+mod speakers;
+pub mod summary;
 pub mod text;
 mod window;
 
@@ -102,6 +104,12 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec![AUTOSTART_ARG])))
         .invoke_handler(tauri::generate_handler![
+            commands::panel_expand,
+            commands::history_stats,
+            commands::run_action,
+            commands::panel_pin,
+            commands::panel_close,
+            commands::panel_minimize,
             commands::list_notes,
             commands::search_notes,
             commands::get_note,
@@ -115,6 +123,10 @@ pub fn run() {
             commands::get_settings,
             commands::save_settings,
             commands::set_autostart,
+            commands::rename_speaker,
+            commands::suggest_speaker_names,
+            commands::list_voices,
+            commands::forget_voice,
         ])
         .setup(move |app| {
             // First run: start with Windows by default (Settings can turn it off).

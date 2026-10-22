@@ -18,8 +18,9 @@ RUNTIME = [
     "bark-onnx/decoder.safetensors",
     "bark-onnx/config.json",
     "bark-onnx/NOTICE",
-    "llm/LFM2-2.6B-Transcript-Q4_K_M.gguf",  # meeting summaries
+    "llm/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",  # meeting summaries
     "llm/LFM2-1.2B-Q4_K_M.gguf",  # smart formatting, command mode
+    "speaker/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx",  # telling meeting voices apart
     "onnxruntime.dll",
 ]
 

@@ -14,22 +14,26 @@ use tiny_skia::Pixmap;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, w};
 
-use crate::menu::{self, MenuItem, Theme, ToastSpec};
+use crate::menu::{self, MenuItem, ToastSpec};
 use crate::pill::{self, PillState, View};
+use crate::theme::{self, IdleStyle, Style};
 
-const CANVAS_W: f32 = 184.0; // pill canvas (logical px): biggest state + shadow room
-const CANVAS_H: f32 = 58.0;
+const CANVAS_W: f32 = 340.0; // pill canvas (logical px): widest state (the hint bar) + shadow room
+const CANVAS_H: f32 = 64.0;
 const TIMER_ANIM: usize = 1;
 const TIMER_CLICK: usize = 2;
 const TIMER_TOAST: usize = 3;
+const TIMER_PEEK: usize = 4;
 const FRAME_MS: u32 = 16;
+/// The breathing idle halo is slow; 15 fps is plenty and keeps CPU near zero.
+const SLOW_FRAME_MS: u32 = 66;
+const PEEK_DELAY_MS: u32 = 450;
 const LEVEL_HZ: f32 = 30.0;
 const HISTORY: usize = 48;
 const WM_MOUSELEAVE: u32 = 0x02A3; // lives in Win32_UI_Controls; not worth the feature
@@ -53,6 +57,7 @@ enum Cmd {
     Menu(Vec<MenuItem>, i32, i32),
     Toast(ToastSpec),
     CloseToast(u64),
+    Restyle,
     Quit,
 }
 
@@ -64,6 +69,8 @@ pub struct Overlay {
     /// The pill's waveform reads this (f32 bits); the app stores the active track's level.
     pub level: Arc<AtomicU32>,
     visible: Arc<Mutex<bool>>,
+    /// Pill centre, physical screen px.
+    center: Arc<Mutex<(i32, i32)>>,
 }
 
 impl Overlay {
@@ -73,15 +80,17 @@ impl Overlay {
         let (id_tx, id_rx) = channel();
         let level = Arc::new(AtomicU32::new(0));
         let lv = level.clone();
+        let center = Arc::new(Mutex::new(pos.unwrap_or((0, 0))));
+        let c = center.clone();
         std::thread::Builder::new()
             .name("overlay".into())
             .spawn(move || {
                 let _ = id_tx.send(unsafe { GetCurrentThreadId() });
-                run(rx, events, lv, pos, visible);
+                run(rx, events, lv, pos, visible, c);
             })
             .expect("overlay thread");
         let thread_id = id_rx.recv().expect("overlay thread id");
-        Self { tx, thread_id, level, visible: Arc::new(Mutex::new(visible)) }
+        Self { tx, thread_id, level, visible: Arc::new(Mutex::new(visible)), center }
     }
 
     fn send(&self, c: Cmd) {
@@ -116,6 +125,17 @@ impl Overlay {
     pub fn quit(&self) {
         self.send(Cmd::Quit);
     }
+    /// Look and personalisation; applies immediately.
+    pub fn set_style(&self, s: Style) {
+        theme::set(s.clone());
+        self.send(Cmd::Restyle);
+    }
+    /// The pill's centre and the work area of its monitor (left, top, right, bottom), physical px.
+    pub fn pill_place(&self) -> ((i32, i32), (i32, i32, i32, i32)) {
+        let (x, y) = *self.center.lock();
+        let wa = work_area_at(POINT { x, y });
+        ((x, y), (wa.left, wa.top, wa.right, wa.bottom))
+    }
 }
 
 // ---- UI thread state ---------------------------------------------------------------------------
@@ -146,9 +166,14 @@ struct PillWin {
     rec_start: Instant,
     hover: bool,
     hover_stop: bool,
+    /// Idle and hovered a moment: showing the hint bar.
+    peek: bool,
     tracking: bool,
     drag: Option<(POINT, POINT, bool)>, // cursor at press, window centre at press, moved
     center: POINT,
+    shared_center: Arc<Mutex<(i32, i32)>>,
+    /// Animation timer at the slow (breathing) rate.
+    slow: bool,
     levels: Vec<f32>,
     level_acc: f32,
     visible: bool,
@@ -158,7 +183,7 @@ struct PillWin {
 struct MenuWin {
     hwnd: HWND,
     items: Vec<MenuItem>,
-    hover: Option<usize>,
+    hover: Option<(usize, Option<usize>)>,
     opened: Instant,
     origin: POINT,
 }
@@ -280,23 +305,6 @@ fn work_area_at(p: POINT) -> RECT {
     }
 }
 
-pub fn system_dark() -> bool {
-    let mut v: u32 = 1;
-    let mut n = 4u32;
-    let r = unsafe {
-        RegGetValueW(
-            HKEY_CURRENT_USER,
-            w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
-            w!("AppsUseLightTheme"),
-            RRF_RT_REG_DWORD,
-            None,
-            Some(&mut v as *mut u32 as *mut _),
-            Some(&mut n),
-        )
-    };
-    r.is_ok() && v == 0
-}
-
 fn lparam_xy(l: LPARAM) -> (i32, i32) {
     ((l.0 & 0xFFFF) as i16 as i32, ((l.0 >> 16) & 0xFFFF) as i16 as i32)
 }
@@ -318,7 +326,14 @@ fn track_leave(hwnd: HWND) {
 
 // ---- thread main -----------------------------------------------------------------------------
 
-fn run(rx: Receiver<Cmd>, events: Sender<UiEvent>, level: Arc<AtomicU32>, pos: Option<(i32, i32)>, visible: bool) {
+fn run(
+    rx: Receiver<Cmd>,
+    events: Sender<UiEvent>,
+    level: Arc<AtomicU32>,
+    pos: Option<(i32, i32)>,
+    visible: bool,
+    shared_center: Arc<Mutex<(i32, i32)>>,
+) {
     register(w!("EarshotPill"), Some(pill_proc));
     register(w!("EarshotMenu"), Some(menu_proc));
     register(w!("EarshotToast"), Some(toast_proc));
@@ -327,7 +342,8 @@ fn run(rx: Receiver<Cmd>, events: Sender<UiEvent>, level: Arc<AtomicU32>, pos: O
         let wa = work_area_at(POINT { x: 0, y: 0 });
         POINT { x: (wa.left + wa.right) / 2, y: wa.bottom - (36.0 * scale(hwnd)) as i32 }
     });
-    let (w0, h0) = PillState::Idle.size(false);
+    *shared_center.lock() = (center.x, center.y);
+    let (w0, h0) = PillState::Idle.size(false, false);
     UI.with(|u| {
         *u.borrow_mut() = Some(Ui {
             pill: PillWin {
@@ -340,9 +356,12 @@ fn run(rx: Receiver<Cmd>, events: Sender<UiEvent>, level: Arc<AtomicU32>, pos: O
                 rec_start: Instant::now(),
                 hover: false,
                 hover_stop: false,
+                peek: false,
                 tracking: false,
                 drag: None,
                 center,
+                shared_center,
+                slow: false,
                 levels: vec![0.0; HISTORY],
                 level_acc: 0.0,
                 visible,
@@ -413,6 +432,10 @@ impl Ui {
                     }
                 }
             }
+            Cmd::Restyle => {
+                self.render_pill();
+                self.kick();
+            }
             Cmd::Quit => {
                 self.quit = true;
                 unsafe {
@@ -435,14 +458,20 @@ impl Ui {
             }
         }
         p.state = s;
+        if p.state != PillState::Idle {
+            p.peek = false;
+        }
         self.kick();
     }
 
-    /// Start the animation timer (if not running).
+    /// Start the animation timer at full rate (if it isn't already).
     fn kick(&mut self) {
-        if !self.pill.animating {
+        if !self.pill.animating || self.pill.slow {
+            if !self.pill.animating {
+                self.last_tick = Instant::now();
+            }
             self.pill.animating = true;
-            self.last_tick = Instant::now();
+            self.pill.slow = false;
             unsafe {
                 SetTimer(Some(self.pill.hwnd), TIMER_ANIM, FRAME_MS, None);
             }
@@ -453,11 +482,16 @@ impl Ui {
         !matches!(self.pill.state, PillState::Idle | PillState::Done | PillState::Error)
     }
 
+    /// Idle but breathing: keeps a slow timer instead of stopping.
+    fn breathing(&self) -> bool {
+        self.pill.state == PillState::Idle && !self.pill.peek && theme::style().idle == IdleStyle::Breathing
+    }
+
     fn tick(&mut self) {
         let now = Instant::now();
         let dt = (now - self.last_tick).as_secs_f32().min(0.05);
         self.last_tick = now;
-        let (tw, th) = self.pill.state.size(self.pill.hover);
+        let (tw, th) = self.pill.state.size(self.pill.hover, self.pill.peek);
         let p = &mut self.pill;
         p.w.step(tw, dt);
         p.h.step(th, dt);
@@ -476,9 +510,18 @@ impl Ui {
         let settled = p.w.settled(tw) && p.h.settled(th) && p.content >= 1.0;
         self.render_pill();
         if settled && !self.live() {
-            self.pill.animating = false;
-            unsafe {
-                let _ = KillTimer(Some(self.pill.hwnd), TIMER_ANIM);
+            if self.breathing() {
+                if !self.pill.slow {
+                    self.pill.slow = true;
+                    unsafe {
+                        SetTimer(Some(self.pill.hwnd), TIMER_ANIM, SLOW_FRAME_MS, None);
+                    }
+                }
+            } else {
+                self.pill.animating = false;
+                unsafe {
+                    let _ = KillTimer(Some(self.pill.hwnd), TIMER_ANIM);
+                }
             }
         }
     }
@@ -493,6 +536,7 @@ impl Ui {
         let Some(mut pm) = Pixmap::new(pw, ph) else { return };
         let view = View {
             state: &p.state,
+            peek: p.peek,
             w: p.w.x.max(4.0),
             h: p.h.x.max(4.0),
             content: p.content,
@@ -522,10 +566,17 @@ impl Ui {
                     if moved || dx.abs() + dy.abs() > 4 {
                         self.pill.drag = Some((start, c0, true));
                         self.pill.center = POINT { x: c0.x + dx, y: c0.y + dy };
+                        *self.pill.shared_center.lock() = (self.pill.center.x, self.pill.center.y);
+                        self.pill.peek = false;
                         self.render_pill();
                     }
                 }
                 let hover_stop = pill::hits_stop(&self.pill.state, self.pill.w.x, CANVAS_W, CANVAS_H, x, y, true);
+                if !self.pill.hover && self.pill.state == PillState::Idle && theme::style().peek {
+                    unsafe {
+                        SetTimer(Some(self.pill.hwnd), TIMER_PEEK, PEEK_DELAY_MS, None);
+                    }
+                }
                 if !self.pill.hover || hover_stop != self.pill.hover_stop {
                     self.pill.hover = true;
                     self.pill.hover_stop = hover_stop;
@@ -536,10 +587,17 @@ impl Ui {
                 self.pill.tracking = false;
                 self.pill.hover = false;
                 self.pill.hover_stop = false;
+                self.pill.peek = false;
+                unsafe {
+                    let _ = KillTimer(Some(self.pill.hwnd), TIMER_PEEK);
+                }
                 self.kick();
             }
             WM_LBUTTONDOWN => {
-                unsafe { SetCapture(self.pill.hwnd) };
+                unsafe {
+                    SetCapture(self.pill.hwnd);
+                    let _ = KillTimer(Some(self.pill.hwnd), TIMER_PEEK);
+                }
                 self.pill.drag = Some((cursor(), self.pill.center, false));
             }
             WM_LBUTTONUP => {
@@ -596,7 +654,7 @@ impl Ui {
         let s = scale(m.hwnd);
         let (w, h) = ((menu::MENU_W + 2.0 * menu::MARGIN) * s, (menu::menu_height(&m.items) + 2.0 * menu::MARGIN) * s);
         let Some(mut pm) = Pixmap::new(w.ceil() as u32, h.ceil() as u32) else { return };
-        menu::draw_menu(&mut pm, &m.items, m.hover, Theme { dark: system_dark() }, s);
+        menu::draw_menu(&mut pm, &m.items, m.hover, s);
         let t = (m.opened.elapsed().as_secs_f32() / 0.12).min(1.0);
         let ease = 1.0 - (1.0 - t).powi(3);
         present(m.hwnd, &pm, m.origin.x, m.origin.y + ((1.0 - ease) * 6.0 * s) as i32, (ease * 255.0) as u8);
@@ -626,33 +684,41 @@ impl Ui {
                 }
             }
             WM_MOUSEMOVE => {
-                let h = menu::item_at(&m.items, lx as f32 / s, ly as f32 / s);
+                let h = menu::hit(&m.items, lx as f32 / s, ly as f32 / s);
                 if h != m.hover {
                     m.hover = h;
                     self.render_menu();
                 }
             }
-            WM_LBUTTONUP => {
-                if let Some(i) = menu::item_at(&m.items, lx as f32 / s, ly as f32 / s) {
+            WM_LBUTTONUP => match menu::hit(&m.items, lx as f32 / s, ly as f32 / s) {
+                // a choice row: select in place and keep the menu open
+                Some((i, Some(k))) => {
+                    m.items[i].selected = k;
+                    let id = format!("{}:{}", m.items[i].id, m.items[i].choices[k].0);
+                    self.render_menu();
+                    self.emit(UiEvent::Menu(id));
+                }
+                Some((i, None)) if m.items[i].choices.is_empty() => {
                     let id = m.items[i].id.clone();
                     self.close_menu();
                     self.emit(UiEvent::Menu(id));
                 }
-            }
+                _ => {}
+            },
             WM_KEYDOWN => {
                 let n = m.items.len();
                 match VIRTUAL_KEY(w.0 as u16) {
                     VK_ESCAPE => self.close_menu(),
                     VK_DOWN => {
-                        m.hover = Some(m.hover.map_or(0, |i| (i + 1) % n));
+                        m.hover = Some((m.hover.map_or(0, |(i, _)| (i + 1) % n), None));
                         self.render_menu();
                     }
                     VK_UP => {
-                        m.hover = Some(m.hover.map_or(n - 1, |i| (i + n - 1) % n));
+                        m.hover = Some((m.hover.map_or(n - 1, |(i, _)| (i + n - 1) % n), None));
                         self.render_menu();
                     }
                     VK_RETURN => {
-                        if let Some(i) = m.hover {
+                        if let Some((i, _)) = m.hover.filter(|(i, _)| m.items[*i].choices.is_empty()) {
                             let id = m.items[i].id.clone();
                             self.close_menu();
                             self.emit(UiEvent::Menu(id));
@@ -711,7 +777,7 @@ impl Ui {
         let (w, h) = ((menu::TOAST_W + 2.0 * menu::MARGIN) * s, (menu::toast_height(&t.spec) + 2.0 * menu::MARGIN) * s);
         let Some(mut pm) = Pixmap::new(w.ceil() as u32, h.ceil() as u32) else { return };
         let progress = if t.spec.timeout_s > 0.0 { t.elapsed / t.spec.timeout_s } else { 0.0 };
-        menu::draw_toast(&mut pm, &t.spec, Theme { dark: system_dark() }, s, t.hover_btn, t.hover, progress);
+        menu::draw_toast(&mut pm, &t.spec, s, t.hover_btn, t.hover, progress);
         let appear = (t.shown.elapsed().as_secs_f32() / 0.22).min(1.0);
         let gone = t.closing.map_or(0.0, |c| (c.elapsed().as_secs_f32() / 0.18).min(1.0));
         let ease = (1.0 - (1.0 - appear).powi(3)) * (1.0 - gone);
@@ -786,6 +852,15 @@ unsafe extern "system" fn pill_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) 
                         let _ = KillTimer(Some(hwnd), TIMER_CLICK);
                     }
                     ui.emit(UiEvent::Click);
+                }
+                TIMER_PEEK => {
+                    unsafe {
+                        let _ = KillTimer(Some(hwnd), TIMER_PEEK);
+                    }
+                    if ui.pill.hover && ui.pill.drag.is_none() && ui.pill.state == PillState::Idle {
+                        ui.pill.peek = true;
+                        ui.kick();
+                    }
                 }
                 _ => {}
             });

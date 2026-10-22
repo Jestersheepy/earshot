@@ -1,36 +1,48 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { listen } from "@tauri-apps/api/event";
-  import { api, dayLabel, timeOf, appName, type NoteMeta, type SearchHit } from "$lib/api";
+  import { api, applyLook, dayLabel, type NoteMeta, type PanelMode, type SearchHit } from "$lib/api";
   import Icon from "$lib/Icon.svelte";
+  import Home from "$lib/Home.svelte";
+  import NoteRow from "$lib/NoteRow.svelte";
   import NoteView from "$lib/NoteView.svelte";
   import History from "$lib/History.svelte";
   import Settings from "$lib/Settings.svelte";
 
-  type Section = "notes" | "meetings" | "voice" | "history" | "settings";
-  let section = $state<Section>("notes");
+  type Section = "home" | "notes" | "history" | "settings";
+  type Filter = "all" | "meeting" | "voice";
+
+  let width = $state(400);
+  let wide = $derived(width >= 720);
+  let section = $state<Section>("home");
+  let filter = $state<Filter>("all");
   let notes = $state<NoteMeta[]>([]);
   let loaded = $state(false);
   let query = $state("");
   let hits = $state<SearchHit[] | null>(null);
   let selected = $state<string | null>(null);
-  let searchBox: HTMLInputElement;
+  let pinned = $state(false);
+  let origin = $state<PanelMode["origin"]>("none");
+  let opened = $state(0);
+  let searchBox = $state<HTMLInputElement>();
 
-  const nav: { id: Section; label: string; icon: string }[] = [
-    { id: "notes", label: "All notes", icon: "all" },
-    { id: "meetings", label: "Meetings", icon: "meeting" },
-    { id: "voice", label: "Voice notes", icon: "voice" },
-    { id: "history", label: "Dictation history", icon: "history" },
+  const filters: { id: Filter; label: string }[] = [
+    { id: "all", label: "All" },
+    { id: "meeting", label: "Meetings" },
+    { id: "voice", label: "Voice notes" },
+  ];
+  const tabs: { id: Section; label: string; icon: string }[] = [
+    { id: "home", label: "Home", icon: "home" },
+    { id: "notes", label: "Notes", icon: "all" },
+    { id: "history", label: "History", icon: "history" },
+    { id: "settings", label: "Settings", icon: "settings" },
   ];
 
-  const inSection = (m: NoteMeta) =>
-    section === "meetings" ? m.kind === "meeting" : section === "voice" ? m.kind !== "meeting" : true;
-
+  const matches = (m: NoteMeta) => (filter === "meeting" ? m.kind === "meeting" : filter === "voice" ? m.kind !== "meeting" : true);
   let shown = $derived.by(() => {
     const items = hits ? hits.map((h) => ({ meta: h.meta, snippet: h.snippet })) : notes.map((meta) => ({ meta, snippet: "" }));
-    return items.filter((i) => inSection(i.meta));
+    return items.filter((i) => matches(i.meta));
   });
-
   let groups = $derived.by(() => {
     const out: { label: string; items: typeof shown }[] = [];
     for (const item of shown) {
@@ -40,10 +52,9 @@
     }
     return out;
   });
-
   let counts = $derived({
-    notes: notes.length,
-    meetings: notes.filter((n) => n.kind === "meeting").length,
+    all: notes.length,
+    meeting: notes.filter((n) => n.kind === "meeting").length,
     voice: notes.filter((n) => n.kind !== "meeting").length,
   });
 
@@ -59,35 +70,65 @@
     clearTimeout(searchTimer);
     searchTimer = setTimeout(async () => {
       hits = query.trim() ? await api.searchNotes(query) : null;
-      if (section === "history" || section === "settings") section = "notes";
+      if (hits) {
+        section = "notes";
+        if (!wide) selected = null;
+      }
     }, 120);
   }
+  function clearSearch() {
+    query = "";
+    hits = null;
+  }
 
+  /** Sections as the app names them: the dot's menu, the tray, toasts. */
   function go(s: string) {
-    if (["notes", "meetings", "voice", "history", "settings"].includes(s)) section = s as Section;
+    selected = wide ? selected : null;
+    if (s === "meetings" || s === "voice" || s === "notes") {
+      section = "notes";
+      filter = s === "meetings" ? "meeting" : s === "voice" ? "voice" : "all";
+    } else if (s === "home" || s === "history" || s === "settings") section = s;
   }
 
   function openNote(path: string) {
-    query = "";
-    hits = null;
+    clearSearch();
     section = "notes";
+    filter = "all";
     selected = path;
+  }
+
+  async function loadLook() {
+    try {
+      applyLook(await api.getSettings());
+    } catch {}
   }
 
   onMount(() => {
     const start = (window as any).__EARSHOT_START__;
     if (start?.event === "open-note") openNote(start.arg);
     else if (start?.arg) go(start.arg);
+    loadLook();
     refresh();
     const subs = [
       listen("notes-changed", refresh),
       listen<string>("navigate", (e) => go(e.payload)),
       listen<string>("open-note", (e) => refresh().then(() => openNote(e.payload))),
+      listen<PanelMode>("panel-mode", (e) => {
+        pinned = e.payload.pinned;
+        origin = e.payload.expanded ? "none" : e.payload.origin;
+        opened++;
+      }),
+      listen("panel-hidden", () => {
+        if (!wide) selected = null;
+      }),
     ];
     const keys = (e: KeyboardEvent) => {
       if ((e.ctrlKey && e.key === "f") || (e.key === "/" && document.activeElement === document.body)) {
         e.preventDefault();
         searchBox?.focus();
+      } else if (e.key === "Escape" && document.activeElement?.tagName !== "INPUT") {
+        if (!wide && selected) selected = null;
+        else if (!wide) api.panel.close();
       }
     };
     window.addEventListener("keydown", keys);
@@ -96,149 +137,250 @@
       window.removeEventListener("keydown", keys);
     };
   });
+
+  function togglePin() {
+    pinned = !pinned;
+    api.panel.pin(pinned);
+  }
 </script>
 
-<div class="app">
-  <aside class="side">
-    <div class="brand">
-      <span class="logo"></span>
-      <span>Earshot</span>
-    </div>
-    <label class="search">
-      <Icon name="search" size={14} />
-      <input bind:this={searchBox} bind:value={query} oninput={onSearch} placeholder="Search notes" spellcheck="false" />
-      {#if query}
-        <button class="clear" onclick={() => { query = ""; hits = null; }} aria-label="Clear search"><Icon name="x" size={12} /></button>
-      {/if}
-    </label>
-    <nav>
-      {#each nav as n (n.id)}
-        <button class="nav" class:active={section === n.id} onclick={() => (section = n.id)}>
-          <Icon name={n.icon} />
-          <span>{n.label}</span>
-          {#if n.id !== "history"}<span class="count">{counts[n.id as "notes" | "meetings" | "voice"]}</span>{/if}
+<svelte:window bind:innerWidth={width} />
+
+{#snippet list()}
+  {#if wide}
+    <div class="list-head">{hits ? "Search" : filter === "all" ? "All notes" : filters.find((f) => f.id === filter)?.label}</div>
+  {:else}
+    <div class="filters">
+      {#each filters as f (f.id)}
+        <button class:on={filter === f.id} onclick={() => (filter = f.id)}>
+          {f.label}<span>{counts[f.id]}</span>
         </button>
       {/each}
-    </nav>
-    <div class="spacer"></div>
-    <nav>
-      <button class="nav" onclick={() => api.openNotesFolder()}>
-        <Icon name="folder" />
-        <span>Open notes folder</span>
-      </button>
-      <button class="nav" class:active={section === "settings"} onclick={() => (section = "settings")}>
-        <Icon name="settings" />
-        <span>Settings</span>
-      </button>
-    </nav>
-  </aside>
-
-  {#if section === "history"}
-    <main class="wide"><History /></main>
-  {:else if section === "settings"}
-    <main class="wide"><Settings /></main>
-  {:else}
-    <section class="list">
-      <header>
-        <h2>{hits ? "Search" : nav.find((n) => n.id === section)?.label}</h2>
-        <span class="muted">{shown.length} {shown.length === 1 ? "note" : "notes"}</span>
-      </header>
-      <div class="scroll">
-        {#if !loaded}
-          <div></div>
-        {:else if shown.length === 0}
-          <div class="empty">
-            {#if hits}
-              <strong>No matches</strong>
-              <span>Nothing in your notes mentions “{query}”.</span>
-            {:else}
-              <strong>Nothing here yet</strong>
-              <span>Record a voice note with Ctrl+Alt+N,<br />or a meeting with Ctrl+Alt+M.</span>
-            {/if}
-          </div>
+    </div>
+  {/if}
+  <div class="scroll">
+    {#if !loaded}
+      <div></div>
+    {:else if shown.length === 0}
+      <div class="empty">
+        {#if hits}
+          <strong>No matches</strong>
+          <span>Nothing in your notes mentions “{query}”.</span>
         {:else}
-          {#each groups as g (g.label)}
-            <div class="day">{g.label}</div>
-            {#each g.items as { meta, snippet } (meta.path)}
-              <button class="item" class:selected={selected === meta.path} onclick={() => (selected = meta.path)}>
-                <div class="row1">
-                  <span class="dot" class:meeting={meta.kind === "meeting"}></span>
-                  <span class="title">{meta.title}</span>
-                  <span class="time">{timeOf(meta.date)}</span>
-                </div>
-                <div class="preview">{snippet || meta.preview}</div>
-                <div class="tags">
-                  {#if meta.duration}<span>{meta.duration}</span>{/if}
-                  {#if meta.app}<span>{appName(meta.app)}</span>{/if}
-                  {#if meta.words}<span>{meta.words} words</span>{/if}
-                </div>
-              </button>
-            {/each}
-          {/each}
+          <strong>Nothing here yet</strong>
+          <span>Record a voice note with Ctrl+Alt+N,<br />or a meeting with Ctrl+Alt+M.</span>
         {/if}
       </div>
-    </section>
-    <main>
-      {#if selected}
-        {#key selected}
-          <NoteView path={selected} onchange={refresh} ondelete={() => { selected = null; refresh(); }} />
-        {/key}
+    {:else}
+      {#each groups as g (g.label)}
+        <div class="day">{g.label}</div>
+        {#each g.items as { meta, snippet } (meta.path)}
+          <NoteRow {meta} {snippet} selected={wide && selected === meta.path} onclick={() => (selected = meta.path)} />
+        {/each}
+      {/each}
+    {/if}
+  </div>
+{/snippet}
+
+{#snippet search()}
+  <label class="search">
+    <Icon name="search" size={14} />
+    <input bind:this={searchBox} bind:value={query} oninput={onSearch} placeholder="Search notes" spellcheck="false" />
+    {#if query}
+      <button class="clear" onclick={clearSearch} aria-label="Clear search"><Icon name="x" size={12} /></button>
+    {:else}
+      <kbd>Ctrl F</kbd>
+    {/if}
+  </label>
+{/snippet}
+
+{#key opened}
+  <div class="app origin-{origin}" class:wide>
+    <header class="bar" data-tauri-drag-region>
+      {#if !wide && selected}
+        <button class="icon-btn" onclick={() => (selected = null)} aria-label="Back"><Icon name="back" /></button>
+        <span class="crumb" data-tauri-drag-region>{hits ? "Search" : filter === "all" ? "Notes" : filters.find((f) => f.id === filter)?.label}</span>
       {:else}
-        <div class="empty">
-          <strong>Pick a note</strong>
-          <span>Summaries, transcripts and recordings show up here.</span>
-        </div>
+        <span class="logo" data-tauri-drag-region></span>
+        <span class="brand" data-tauri-drag-region>Earshot</span>
       {/if}
-    </main>
-  {/if}
-</div>
+      <div class="spacer" data-tauri-drag-region></div>
+      {#if !wide}
+        <button class="icon-btn" class:on={pinned} onclick={togglePin} title={pinned ? "Unpin" : "Keep open"}><Icon name="pin" size={15} /></button>
+      {/if}
+      <button class="icon-btn" onclick={() => api.panel.expand(!wide)} title={wide ? "Back to the dot" : "Expand"}>
+        <Icon name={wide ? "collapse" : "expand"} size={15} />
+      </button>
+      {#if wide}
+        <button class="icon-btn" onclick={() => api.panel.minimize()} title="Minimise"><Icon name="minimize" size={15} /></button>
+      {/if}
+      <button class="icon-btn close" onclick={() => api.panel.close()} title="Close"><Icon name="x" size={15} /></button>
+    </header>
+
+    {#if wide}
+      <div class="cols" class:two={section !== "notes"}>
+        <aside class="side">
+          {@render search()}
+          <nav>
+            <button class="nav" class:active={section === "home"} onclick={() => (section = "home")}><Icon name="home" /><span>Home</span></button>
+            {#each filters as f (f.id)}
+              <button class="nav" class:active={section === "notes" && filter === f.id} onclick={() => ((section = "notes"), (filter = f.id))}>
+                <Icon name={f.id === "meeting" ? "meeting" : f.id === "voice" ? "voice" : "all"} />
+                <span>{f.id === "all" ? "All notes" : f.label}</span>
+                <span class="count">{counts[f.id]}</span>
+              </button>
+            {/each}
+            <button class="nav" class:active={section === "history"} onclick={() => (section = "history")}><Icon name="history" /><span>Dictation history</span></button>
+          </nav>
+          <div class="spacer"></div>
+          <nav>
+            <button class="nav" onclick={() => api.openNotesFolder()}><Icon name="folder" /><span>Notes folder</span></button>
+            <button class="nav" class:active={section === "settings"} onclick={() => (section = "settings")}><Icon name="settings" /><span>Settings</span></button>
+          </nav>
+        </aside>
+        {#if section === "home"}
+          <main class="page"><div class="narrow"><Home {notes} onopen={openNote} onall={() => (section = "notes")} /></div></main>
+        {:else if section === "history"}
+          <main class="page"><History /></main>
+        {:else if section === "settings"}
+          <main class="page"><Settings /></main>
+        {:else}
+          <section class="list">{@render list()}</section>
+          <main class="reader">
+            {#if selected}
+              {#key selected}
+                <NoteView path={selected} onchange={refresh} ondelete={() => ((selected = null), refresh())} />
+              {/key}
+            {:else}
+              <div class="empty">
+                <strong>Pick a note</strong>
+                <span>Summaries, transcripts and recordings show up here.</span>
+              </div>
+            {/if}
+          </main>
+        {/if}
+      </div>
+    {:else if selected}
+      <main class="pushed">
+        {#key selected}
+          <NoteView path={selected} compact onchange={refresh} ondelete={() => ((selected = null), refresh())} />
+        {/key}
+      </main>
+    {:else}
+      <div class="compact-top">
+        {@render search()}
+        <nav class="tabs">
+          {#each tabs as t (t.id)}
+            <button class:on={section === t.id} onclick={() => (section = t.id)}>
+              <Icon name={t.icon} size={15} /><span>{t.label}</span>
+            </button>
+          {/each}
+        </nav>
+      </div>
+      <main class="body">
+        {#if section === "home"}
+          <Home {notes} onopen={openNote} onall={() => (section = "notes")} />
+        {:else if section === "history"}
+          <History />
+        {:else if section === "settings"}
+          <Settings />
+        {:else}
+          <div class="listwrap">{@render list()}</div>
+        {/if}
+      </main>
+    {/if}
+  </div>
+{/key}
 
 <style>
   .app {
-    display: grid;
-    grid-template-columns: 232px 340px 1fr;
-    height: 100vh;
-  }
-  .app:has(main.wide) {
-    grid-template-columns: 232px 1fr;
-  }
-  .side {
-    background: var(--side);
-    border-right: 1px solid var(--border);
     display: flex;
     flex-direction: column;
-    padding: 14px 10px;
-    gap: 4px;
+    height: 100vh;
+    background: var(--bg);
+    animation: open 0.2s var(--ease);
   }
-  .brand {
+  .app.origin-bottom {
+    transform-origin: 50% 100%;
+  }
+  .app.origin-top {
+    transform-origin: 50% 0;
+  }
+  .app.origin-left {
+    transform-origin: 0 50%;
+  }
+  .app.origin-right {
+    transform-origin: 100% 50%;
+  }
+  .app.origin-none {
+    animation: none;
+  }
+  @keyframes open {
+    from {
+      opacity: 0;
+      transform: scale(0.96);
+    }
+  }
+
+  /* ---- title bar ---- */
+  .bar {
+    flex: none;
     display: flex;
     align-items: center;
-    gap: 10px;
-    font: 600 15px "Segoe UI Variable Display", "Segoe UI", sans-serif;
-    padding: 4px 8px 12px;
+    gap: 2px;
+    height: 44px;
+    padding: 0 8px 0 14px;
+  }
+  .app.wide .bar {
+    height: 40px;
+    border-bottom: 1px solid var(--rule);
+    background: var(--surface);
   }
   .logo {
-    width: 14px;
-    height: 14px;
+    width: 12px;
+    height: 12px;
     border-radius: 50%;
-    background: radial-gradient(circle at 35% 30%, #9db8ff, var(--accent) 60%, #3b62d6);
-    box-shadow: 0 0 0 3px rgba(91, 140, 255, 0.18);
+    background: radial-gradient(circle at 35% 30%, color-mix(in srgb, var(--accent) 45%, white), var(--accent) 65%);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+    margin-right: 9px;
   }
+  .brand {
+    font: 600 14px "Segoe UI Variable Display", "Segoe UI", sans-serif;
+    letter-spacing: -0.005em;
+  }
+  .crumb {
+    font-weight: 600;
+    margin-left: 4px;
+  }
+  .bar .icon-btn:first-child {
+    margin-left: -8px;
+  }
+  .spacer {
+    flex: 1;
+    align-self: stretch;
+  }
+  .close:hover {
+    background: var(--danger);
+    color: white;
+  }
+
+  /* ---- search ---- */
   .search {
     display: flex;
     align-items: center;
     gap: 8px;
-    height: 32px;
-    padding: 0 8px 0 10px;
-    margin-bottom: 10px;
-    border-radius: 8px;
-    background: var(--raised);
-    border: 1px solid var(--border);
+    height: 34px;
+    padding: 0 8px 0 11px;
+    border-radius: 10px;
+    background: var(--surface);
+    border: 1px solid transparent;
     color: var(--faint);
+    transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
   }
   .search:focus-within {
+    background: var(--raised);
     border-color: var(--accent);
-    box-shadow: 0 0 0 3px rgba(91, 140, 255, 0.18);
+    box-shadow: 0 0 0 3px var(--accent-soft);
   }
   .search input {
     flex: 1;
@@ -246,16 +388,159 @@
     border: 0;
     outline: 0;
     background: transparent;
+    color: var(--text);
+  }
+  .search kbd {
+    font: 11px "Segoe UI", sans-serif;
+    color: var(--faint);
   }
   .clear {
     border: 0;
     background: transparent;
     color: var(--faint);
     display: grid;
-    padding: 2px;
-    border-radius: 4px;
+    padding: 3px;
+    border-radius: 5px;
   }
-  nav {
+
+  /* ---- compact ---- */
+  .compact-top {
+    flex: none;
+    padding: 0 12px;
+  }
+  .tabs {
+    display: flex;
+    gap: 2px;
+    margin-top: 8px;
+    border-bottom: 1px solid var(--rule);
+  }
+  .tabs button {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 36px;
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    font-size: 12.5px;
+    position: relative;
+    transition: color 0.15s;
+  }
+  .tabs button:hover {
+    color: var(--text);
+  }
+  .tabs button.on {
+    color: var(--text);
+    font-weight: 600;
+  }
+  .tabs button.on::after {
+    content: "";
+    position: absolute;
+    left: 22%;
+    right: 22%;
+    bottom: -1px;
+    height: 2px;
+    border-radius: 2px;
+    background: var(--accent);
+  }
+  .body {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .listwrap {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    animation: fade-in 0.2s var(--ease);
+  }
+  .pushed {
+    flex: 1;
+    min-height: 0;
+    animation: push-in 0.22s var(--ease);
+  }
+
+  /* ---- list ---- */
+  .filters {
+    flex: none;
+    display: flex;
+    gap: 6px;
+    padding: 12px 14px 4px;
+  }
+  .filters button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 26px;
+    padding: 0 10px;
+    border-radius: 13px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--muted);
+    font-size: 12px;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  .filters button span {
+    color: var(--faint);
+    font-variant-numeric: tabular-nums;
+  }
+  .filters button:hover {
+    color: var(--text);
+  }
+  .filters button.on {
+    background: var(--text);
+    border-color: var(--text);
+    color: var(--bg);
+  }
+  .filters button.on span {
+    color: color-mix(in srgb, var(--bg) 65%, transparent);
+  }
+  .list-head {
+    flex: none;
+    padding: 16px 18px 2px;
+    font: 600 15px "Segoe UI Variable Display", "Segoe UI", sans-serif;
+  }
+  .scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0 6px 16px;
+  }
+  .day {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--bg);
+    padding: 12px 12px 4px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--faint);
+  }
+
+  /* ---- expanded ---- */
+  .cols {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: 220px 320px 1fr;
+  }
+  .cols.two {
+    grid-template-columns: 220px 1fr;
+  }
+  .side {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px 10px;
+    background: var(--surface);
+    border-right: 1px solid var(--rule);
+  }
+  .side .search {
+    background: var(--raised);
+    border-color: var(--border);
+  }
+  .side nav {
     display: flex;
     flex-direction: column;
     gap: 1px;
@@ -267,10 +552,11 @@
     height: 32px;
     padding: 0 10px;
     border: 0;
-    border-radius: 7px;
+    border-radius: 8px;
     background: transparent;
     color: var(--muted);
     text-align: left;
+    transition: background 0.15s, color 0.15s;
   }
   .nav span:first-of-type {
     flex: 1;
@@ -280,8 +566,9 @@
     color: var(--text);
   }
   .nav.active {
-    background: var(--selected);
+    background: var(--raised);
     color: var(--text);
+    box-shadow: var(--shadow-sm);
   }
   .nav.active :global(svg) {
     color: var(--accent);
@@ -290,108 +577,25 @@
     font-size: 12px;
     color: var(--faint);
   }
-  .spacer {
+  .side .spacer {
     flex: 1;
   }
   .list {
     display: flex;
     flex-direction: column;
-    border-right: 1px solid var(--border);
-    background: var(--panel);
     min-width: 0;
+    border-right: 1px solid var(--rule);
   }
-  .list header {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    padding: 18px 18px 10px;
-  }
-  .list h2 {
-    font-size: 18px;
-    font-weight: 600;
-  }
-  .muted {
-    color: var(--faint);
-    font-size: 12px;
-  }
-  .scroll {
-    flex: 1;
-    overflow-y: auto;
-    padding: 0 8px 16px;
-  }
-  .day {
-    position: sticky;
-    top: 0;
-    z-index: 1;
-    background: var(--panel);
-    padding: 10px 10px 6px;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--faint);
-  }
-  .item {
-    display: block;
-    width: 100%;
-    text-align: left;
-    border: 0;
-    background: transparent;
-    padding: 10px 10px 10px 12px;
-    border-radius: 9px;
-    margin-bottom: 2px;
-  }
-  .item:hover {
-    background: var(--hover);
-  }
-  .item.selected {
-    background: var(--selected);
-  }
-  .row1 {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--note);
-    flex: none;
-  }
-  .dot.meeting {
-    background: var(--meeting);
-  }
-  .title {
-    flex: 1;
-    font-weight: 600;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .time {
-    font-size: 12px;
-    color: var(--faint);
-  }
-  .preview {
-    margin: 3px 0 0 15px;
-    color: var(--muted);
-    font-size: 13px;
-    line-height: 1.45;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-  }
-  .tags {
-    display: flex;
-    gap: 10px;
-    margin: 5px 0 0 15px;
-    font-size: 11.5px;
-    color: var(--faint);
-  }
-  main {
+  .reader,
+  .page {
     min-width: 0;
+    min-height: 0;
     overflow: hidden;
-    background: var(--bg);
+  }
+  .narrow {
+    height: 100%;
+    max-width: 680px;
+    margin: 0 auto;
+    padding-top: 12px;
   }
 </style>

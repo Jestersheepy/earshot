@@ -12,7 +12,15 @@ export type NoteMeta = {
   words: number;
 };
 export type Line = { t: number; speaker: string; text: string };
-export type NoteDetail = { meta: NoteMeta; summary: string | null; lines: Line[]; body: string };
+export type SummaryMode = "concise" | "standard" | "nuanced";
+export type NoteDetail = {
+  meta: NoteMeta;
+  summaries: Partial<Record<SummaryMode, string>>;
+  lines: Line[];
+  body: string;
+  /** Speaker names guessed from a known voice, not yet confirmed. */
+  unconfirmed: string[];
+};
 export type SearchHit = { meta: NoteMeta; snippet: string };
 export type HistoryRow = {
   id: number;
@@ -36,17 +44,34 @@ export type Config = {
   smart_format: boolean;
   literal_apps: string[];
   llm: { server: string | null; summary_model: string; format_model: string; ctx: number; threads: number; keep_warm_min: number };
-  pill: { x: number | null; y: number | null; hidden: boolean };
+  pill: {
+    x: number | null;
+    y: number | null;
+    hidden: boolean;
+    size: "small" | "medium" | "large";
+    idle: "dot" | "mic" | "breathing";
+    accent: string;
+    peek: boolean;
+    click: "dictate" | "note" | "meeting" | "panel";
+  };
   dictionary: string[];
   snippets: Snippet[];
   meeting_apps: Record<string, "ask" | "always" | "never">;
   detect_meetings: boolean;
+  summary_mode: SummaryMode;
+  detect_speakers: boolean;
+  your_name: string;
+  theme: "system" | "light" | "dark";
 };
 export type Settings = {
   config: Config;
   models: { dir: string; speech: boolean; server: boolean; summary: boolean; format: boolean };
   autostart: boolean;
+  /** The dot's accent, resolved to #rrggbb. */
+  accent: string;
 };
+export type Stats = { today_words: number; week_words: number; total_words: number; today_count: number };
+export type PanelMode = { expanded: boolean; pinned: boolean; origin: "top" | "bottom" | "left" | "right" | "none" };
 
 export const api = {
   listNotes: () => invoke<NoteMeta[]>("list_notes"),
@@ -54,7 +79,7 @@ export const api = {
   getNote: (path: string) => invoke<NoteDetail>("get_note", { path }),
   renameNote: (path: string, title: string) => invoke<void>("rename_note", { path, title }),
   deleteNote: (path: string) => invoke<void>("delete_note", { path }),
-  resummarize: (path: string) => invoke<string>("resummarize", { path }),
+  resummarize: (path: string, mode: SummaryMode) => invoke<string>("resummarize", { path, mode }),
   reveal: (path: string) => invoke<void>("reveal", { path }),
   openNotesFolder: () => invoke<void>("open_notes_folder"),
   listHistory: (query: string, limit = 300) => invoke<HistoryRow[]>("list_history", { query, limit }),
@@ -62,7 +87,45 @@ export const api = {
   getSettings: () => invoke<Settings>("get_settings"),
   saveSettings: (config: Config) => invoke<void>("save_settings", { config }),
   setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
+  renameSpeaker: (path: string, from: string, to: string) => invoke<void>("rename_speaker", { path, from, to }),
+  suggestSpeakerNames: (path: string) => invoke<[string, string][]>("suggest_speaker_names", { path }),
+  listVoices: () => invoke<[string, number][]>("list_voices"),
+  forgetVoice: (name: string) => invoke<void>("forget_voice", { name }),
+  historyStats: () => invoke<Stats>("history_stats"),
+  runAction: (action: "note" | "meeting") => invoke<void>("run_action", { action }),
+  panel: {
+    expand: (expanded: boolean) => invoke<void>("panel_expand", { expanded }),
+    pin: (pinned: boolean) => invoke<void>("panel_pin", { pinned }),
+    close: () => invoke<void>("panel_close"),
+    minimize: () => invoke<void>("panel_minimize"),
+  },
 };
+
+/** Theme and accent from Settings, applied to the page. */
+export function applyLook(s: Settings) {
+  const root = document.documentElement;
+  if (s.config.theme === "system") delete root.dataset.theme;
+  else root.dataset.theme = s.config.theme;
+  root.style.setProperty("--accent", s.accent);
+}
+
+/** Minutes saved by speaking instead of typing (about 40 wpm typed vs 150 spoken). */
+export const minutesSaved = (words: number) => Math.round(words / 40 - words / 150);
+
+/** A stable colour per speaker label. */
+const HUES = ["#4f6ef7", "#14a38b", "#e29a1d", "#d6457a", "#8b6cf0", "#3a9bd9", "#7a8f2e"];
+export function speakerColor(name: string, order: string[], me: string) {
+  if (name === me || name === "Me") return "var(--accent)";
+  const i = order.filter((n) => n !== me && n !== "Me").indexOf(name);
+  return HUES[(i < 0 ? 0 : i + 1) % HUES.length];
+}
+export const initials = (name: string) =>
+  name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => (/^\d+$/.test(w) ? w : w[0].toUpperCase()))
+    .join("");
 
 export const audioUrl = (path: string) => convertFileSrc(path);
 

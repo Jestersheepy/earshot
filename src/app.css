@@ -1,45 +1,67 @@
+/* Warm, light-first tokens; mirrored from crates/overlay/src/theme.rs so the dot, menu and panel match.
+   --accent is set from Settings (the dot's accent, or the Windows accent). */
 :root {
-  --bg: #f7f7f9;
-  --panel: #ffffff;
-  --side: #f0f0f3;
+  --bg: #fbfaf7;
+  --surface: #f4f2ed;
   --raised: #ffffff;
-  --text: #1c1d21;
-  --muted: #62656d;
-  --faint: #9a9da5;
-  --border: rgba(0, 0, 0, 0.08);
-  --border-strong: rgba(0, 0, 0, 0.14);
-  --hover: rgba(0, 0, 0, 0.045);
-  --selected: rgba(91, 140, 255, 0.12);
-  --accent: #5b8cff;
-  --accent-text: #3d6fe8;
-  --meeting: #f04a4a;
-  --note: #f5a524;
-  --command: #a78bfa;
-  --others: #14b8a6;
-  --ok: #22a06b;
+  --text: #1e1c19;
+  --muted: #75706a;
+  --faint: #a39e96;
+  --rule: #ece8e0;
+  --border: rgba(40, 30, 10, 0.08);
+  --border-strong: rgba(40, 30, 10, 0.15);
+  --hover: rgba(40, 30, 10, 0.045);
+  --accent: #4f6ef7;
+  --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
+  --accent-text: color-mix(in srgb, var(--accent) 82%, var(--text));
+  --meeting: #e5484d;
+  --note: #e29a1d;
+  --command: #8b6cf0;
+  --ok: #2f9e66;
   --danger: #e5484d;
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.05), 0 4px 16px rgba(0, 0, 0, 0.05);
-  --radius: 10px;
+  --shadow-sm: 0 1px 2px rgba(60, 40, 10, 0.06);
+  --shadow: 0 1px 2px rgba(60, 40, 10, 0.05), 0 6px 20px rgba(60, 40, 10, 0.06);
+  --shadow-lg: 0 2px 6px rgba(60, 40, 10, 0.06), 0 16px 40px rgba(60, 40, 10, 0.12);
+  --radius: 12px;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
   color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #17181b;
-    --panel: #1d1e22;
-    --side: #141518;
-    --raised: #24252a;
-    --text: #eef0f4;
-    --muted: #a3a6ae;
-    --faint: #6d7078;
-    --border: rgba(255, 255, 255, 0.07);
-    --border-strong: rgba(255, 255, 255, 0.13);
-    --hover: rgba(255, 255, 255, 0.05);
-    --selected: rgba(91, 140, 255, 0.17);
-    --accent-text: #8aaeff;
+  :root:not([data-theme="light"]) {
+    --bg: #161513;
+    --surface: #1f1d1a;
+    --raised: #24221f;
+    --text: #f2efea;
+    --muted: #a39d94;
+    --faint: #6e6962;
+    --rule: rgba(255, 255, 255, 0.07);
+    --border: rgba(255, 255, 255, 0.08);
+    --border-strong: rgba(255, 255, 255, 0.14);
+    --hover: rgba(255, 255, 255, 0.055);
+    --accent-text: color-mix(in srgb, var(--accent) 70%, white);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 20px rgba(0, 0, 0, 0.25);
+    --shadow-lg: 0 2px 6px rgba(0, 0, 0, 0.3), 0 16px 40px rgba(0, 0, 0, 0.4);
     color-scheme: dark;
   }
+}
+:root[data-theme="dark"] {
+  --bg: #161513;
+  --surface: #1f1d1a;
+  --raised: #24221f;
+  --text: #f2efea;
+  --muted: #a39d94;
+  --faint: #6e6962;
+  --rule: rgba(255, 255, 255, 0.07);
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --hover: rgba(255, 255, 255, 0.055);
+  --accent-text: color-mix(in srgb, var(--accent) 70%, white);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 20px rgba(0, 0, 0, 0.25);
+  --shadow-lg: 0 2px 6px rgba(0, 0, 0, 0.3), 0 16px 40px rgba(0, 0, 0, 0.4);
+  color-scheme: dark;
 }
 
 * {
@@ -52,7 +74,7 @@ body {
   height: 100%;
   background: var(--bg);
   color: var(--text);
-  font: 14px/1.5 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  font: 13px/1.5 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
   user-select: none;
@@ -63,6 +85,7 @@ h2,
 h3,
 h4 {
   font-family: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  font-weight: 600;
   margin: 0;
 }
 
@@ -78,8 +101,13 @@ button {
   cursor: pointer;
 }
 
+:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 1px;
+}
+
 ::selection {
-  background: rgba(91, 140, 255, 0.3);
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
 }
 
 ::-webkit-scrollbar {
@@ -100,20 +128,25 @@ button {
   user-select: text;
 }
 
+/* ---- controls -------------------------------------------------------------------------------- */
+
 .btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
   height: 30px;
   padding: 0 12px;
   border-radius: 8px;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border);
   background: var(--raised);
+  box-shadow: var(--shadow-sm);
   font-size: 13px;
-  transition: background 0.12s, border-color 0.12s;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 .btn:hover {
-  background: var(--hover);
+  background: color-mix(in srgb, var(--raised) 100%, var(--text) 4%);
 }
 .btn:disabled {
   opacity: 0.5;
@@ -125,17 +158,42 @@ button {
   color: white;
 }
 .btn.primary:hover {
-  filter: brightness(1.07);
+  filter: brightness(1.06);
 }
 .btn.ghost {
   border-color: transparent;
   background: transparent;
+  box-shadow: none;
 }
 .btn.ghost:hover {
   background: var(--hover);
 }
 .btn.danger:hover {
   color: var(--danger);
+}
+.btn.icon {
+  width: 30px;
+  padding: 0;
+}
+
+.icon-btn {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  transition: background 0.15s, color 0.15s;
+}
+.icon-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.icon-btn.on {
+  color: var(--accent-text);
+  background: var(--accent-soft);
 }
 
 .field {
@@ -145,11 +203,93 @@ button {
   border: 1px solid var(--border-strong);
   background: var(--raised);
   outline: none;
-  transition: border-color 0.12s, box-shadow 0.12s;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 .field:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(91, 140, 255, 0.18);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* Segmented control. */
+.seg {
+  display: inline-flex;
+  flex: none;
+  padding: 2px;
+  border-radius: 9px;
+  background: var(--hover);
+}
+.seg button {
+  white-space: nowrap;
+  border: 0;
+  background: transparent;
+  padding: 3px 10px;
+  border-radius: 7px;
+  font-size: 12.5px;
+  color: var(--muted);
+  transition: background 0.15s, color 0.15s;
+}
+.seg button:hover {
+  color: var(--text);
+}
+.seg button.on {
+  background: var(--raised);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+.seg button:disabled {
+  cursor: default;
+}
+
+.switch {
+  position: relative;
+  flex: none;
+  width: 36px;
+  height: 20px;
+}
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.switch span {
+  position: absolute;
+  inset: 0;
+  border-radius: 20px;
+  background: var(--border-strong);
+  transition: background 0.18s var(--ease);
+  cursor: pointer;
+}
+.switch span::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  transition: transform 0.18s var(--ease);
+}
+.switch input:checked + span {
+  background: var(--accent);
+}
+.switch input:checked + span::after {
+  transform: translateX(16px);
+}
+.switch input:focus-visible + span {
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.kind-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--note);
+  flex: none;
+}
+.kind-dot.meeting {
+  background: var(--meeting);
 }
 
 .empty {
@@ -164,4 +304,24 @@ button {
 .empty strong {
   color: var(--text);
   font-size: 15px;
+  font-weight: 600;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+@keyframes push-in {
+  from {
+    opacity: 0;
+    transform: translateX(14px);
+  }
+}
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateX(-14px);
+  }
 }

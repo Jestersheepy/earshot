@@ -278,7 +278,7 @@ impl BarkModel {
 
 /// ONNX Runtime is loaded from onnxruntime.dll at runtime (the static prebuilt needs a newer MSVC STL).
 /// Looked up in: $ORT_DYLIB_PATH, next to the exe, then the models folder.
-fn ort_env(model_dir: &Path) -> Result<ort::environment::Environment> {
+pub(crate) fn ort_env(model_dir: &Path) -> Result<ort::environment::Environment> {
     static DLL: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     let dll = DLL.get_or_init(|| {
         let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf));

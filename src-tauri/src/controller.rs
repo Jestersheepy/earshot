@@ -10,19 +10,21 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local};
 use earshot_core::audio::{Capture, Source, write_wav};
-use earshot_core::segment::transcript_md;
+use earshot_core::segment::{merge_turns, transcript_md};
+use earshot_core::speakers::Embedder;
 use earshot_core::stt::{Engine, SR};
 use earshot_core::micwatch::MicEvent;
 use earshot_core::{clipboard, hotkeys};
 use earshot_overlay::menu::{Icon, MenuItem, ToastSpec};
 use earshot_overlay::pill::{Accent, PillState};
+use earshot_overlay::theme::{self, IdleStyle, PillSize, Style, ThemeMode};
 use earshot_overlay::{Overlay, UiEvent};
 
 use crate::config::Config;
 use crate::history::{Entry, History};
 use tauri::Emitter;
 use crate::llm::Pool;
-use crate::meeting::{Meeting, summarize, worth_summarizing};
+use crate::meeting::{Meeting, worth_summarizing};
 use crate::text::FORMAT_CTX;
 use crate::{notes, text};
 
@@ -107,6 +109,7 @@ impl Controller {
         app: tauri::AppHandle,
     ) -> Self {
         let last_text = history.as_ref().and_then(|h| h.last_text());
+        overlay.set_style(style(&cfg));
         Self {
             sh: Shared { cfg: Arc::new(cfg), engine, pool, tx, history },
             overlay,
@@ -151,6 +154,7 @@ impl Controller {
                         Ok(b) => hotkeys::rebind(b),
                         Err(e) => eprintln!("hotkeys: {e:#}"),
                     }
+                    self.overlay.set_style(style(&cfg));
                     self.sh.cfg = Arc::new(*cfg);
                 }
             }
@@ -481,8 +485,13 @@ impl Controller {
             UiEvent::Click => match &self.dict {
                 Some(d) if d.hands_free => self.finish_dictation(),
                 Some(_) => {}
-                None if self.rec.is_none() => self.start_dictation(true),
-                None => {}
+                None => match self.sh.cfg.pill.click.as_str() {
+                    "note" if !matches!(self.rec, Some(Recording::Meeting { .. })) => self.toggle_note(),
+                    "meeting" if !matches!(self.rec, Some(Recording::Note { .. })) => self.toggle_meeting(),
+                    "panel" => self.action("open"),
+                    "dictate" if self.rec.is_none() => self.start_dictation(true),
+                    _ => {}
+                },
             },
             UiEvent::Stop => {
                 if self.dict.as_ref().is_some_and(|d| d.hands_free) {
@@ -497,7 +506,10 @@ impl Controller {
             }
             UiEvent::DoubleClick => self.action("open"),
             UiEvent::Moved { x, y } => self.update_cfg(|c| (c.pill.x, c.pill.y) = (Some(x), Some(y))),
-            UiEvent::ContextMenu { x, y } => self.overlay.menu(self.menu_items(), x, y),
+            UiEvent::ContextMenu { x, y } => {
+                self.overlay.menu(self.menu_items(), x, y);
+                crate::window::prewarm(&self.app);
+            }
             UiEvent::Menu(id) => self.action(&id),
             UiEvent::ToastButton { id, action } => {
                 self.overlay.close_toast(id);
@@ -505,7 +517,7 @@ impl Controller {
                 match action.as_str() {
                     "open" => {
                         if let Some(p) = self.toast_paths.remove(&id) {
-                            crate::window::show_note(&self.app, &p);
+                            crate::window::show_note(&self.app, &p, self.place());
                         }
                     }
                     "record" if self.rec.is_none() => self.start_meeting(prompt),
@@ -552,12 +564,17 @@ impl Controller {
                 self.overlay.set_visible(visible);
                 self.update_cfg(|c| c.pill.hidden = !visible);
             }
-            "open" => crate::window::show(&self.app, "notes"),
-            "history" => crate::window::show(&self.app, "history"),
-            "settings" => crate::window::show(&self.app, "settings"),
+            "open" => crate::window::show(&self.app, "home", self.place()),
+            "history" => crate::window::show(&self.app, "history", self.place()),
+            "settings" => crate::window::show(&self.app, "settings", self.place()),
             "welcome" => {
                 let body = format!("Hold {} to dictate. Right-click the dot for notes and meetings.", pretty_combo(&self.sh.cfg.hotkeys.dictate));
                 self.toast("Earshot is ready", &body, Icon::Mic, Accent::Dictate, Vec::new(), 8.0);
+            }
+            a if a.starts_with("click:") => {
+                let click = a["click:".len()..].to_string();
+                self.update_cfg(|c| c.pill.click = click);
+                self.overlay.set_style(style(&self.sh.cfg));
             }
             "quit" => {
                 self.quitting = true;
@@ -574,6 +591,11 @@ impl Controller {
         }
     }
 
+    /// Where the dot is, for opening the panel beside it.
+    fn place(&self) -> Option<crate::window::Place> {
+        self.overlay.is_visible().then(|| self.overlay.pill_place())
+    }
+
     fn update_cfg(&mut self, f: impl FnOnce(&mut Config)) {
         let mut cfg = (*self.sh.cfg).clone();
         f(&mut cfg);
@@ -585,16 +607,11 @@ impl Controller {
         let hk = &self.sh.cfg.hotkeys;
         let note = matches!(self.rec, Some(Recording::Note { .. }));
         let meeting = matches!(self.rec, Some(Recording::Meeting { .. }));
-        let item = |id: &str, label: &str, hint: &str, icon: Icon| MenuItem {
-            id: id.into(),
-            label: label.into(),
-            hint: pretty_combo(hint),
-            icon,
-            separator_before: false,
-            danger: false,
-        };
+        let item = |id: &str, label: &str, hint: &str, icon: Icon| MenuItem::action(id, label, &pretty_combo(hint), icon);
+        let click = [("dictate", "Dictate"), ("note", "Note"), ("meeting", "Meeting")];
         let mut items = vec![
-            MenuItem { danger: note, ..item("note", if note { "Stop voice note" } else { "New voice note" }, &hk.voice_note, Icon::Notes) },
+            MenuItem::choice("click", "Click to", &click, &self.sh.cfg.pill.click),
+            MenuItem { danger: note, separator_before: true, ..item("note", if note { "Stop voice note" } else { "New voice note" }, &hk.voice_note, Icon::Notes) },
             MenuItem {
                 danger: meeting,
                 ..item("meeting", if meeting { "Stop meeting" } else { "Start meeting" }, &hk.meeting, if meeting { Icon::Record } else { Icon::People })
@@ -610,6 +627,43 @@ impl Controller {
             items.retain(|i| i.id != "paste_last");
         }
         items
+    }
+}
+
+/// The overlay's look from the settings.
+fn style(cfg: &Config) -> Style {
+    let p = &cfg.pill;
+    let accent = match p.accent.as_str() {
+        "auto" => theme::windows_accent(),
+        hex => theme::parse_hex(hex),
+    };
+    let dictate = pretty_combo(&cfg.hotkeys.dictate);
+    let peek_title = match p.click.as_str() {
+        "note" => "Click for a voice note",
+        "meeting" => "Click to record a meeting",
+        "panel" => "Click to open notes",
+        _ => "Click to dictate",
+    };
+    Style {
+        theme: match cfg.theme.as_str() {
+            "light" => ThemeMode::Light,
+            "dark" => ThemeMode::Dark,
+            _ => ThemeMode::System,
+        },
+        size: match p.size.as_str() {
+            "small" => PillSize::Small,
+            "large" => PillSize::Large,
+            _ => PillSize::Medium,
+        },
+        idle: match p.idle.as_str() {
+            "mic" => IdleStyle::Mic,
+            "breathing" => IdleStyle::Breathing,
+            _ => IdleStyle::Dot,
+        },
+        accent: accent.unwrap_or(theme::DEFAULT_ACCENT),
+        peek: p.peek,
+        peek_title: peek_title.into(),
+        peek_hint: if p.click == "dictate" { "Right-click for more".into() } else { format!("Hold {dictate} to dictate") },
     }
 }
 
@@ -642,15 +696,48 @@ fn save_note(sh: &Shared, wave: Vec<f32>, started: DateTime<Local>, duration: f3
     Ok(JobDone::Saved { title: "Voice note saved".into(), body: preview(&body), path })
 }
 
+/// Tell the voices apart. Without the speaker model, or if it fails, the transcript keeps you / Others.
+fn diarize(sh: &Shared, done: &mut crate::meeting::Finished, me_name: &str) -> Vec<crate::speakers::Voice> {
+    let dir = sh.cfg.speaker_dir();
+    if !dir.join(earshot_core::speakers::MODEL).exists() {
+        return Vec::new();
+    }
+    let mut emb = match Embedder::load(&dir, sh.cfg.stt_threads.min(4)) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("speaker model: {e:#}");
+            return Vec::new();
+        }
+    };
+    let known = sh.history.as_ref().and_then(|h| h.voices().ok()).unwrap_or_default();
+    crate::speakers::diarize(&mut done.lines, &done.me, done.others.as_deref(), &mut emb, &known, me_name)
+}
+
 fn save_meeting(sh: &Shared, meeting: Meeting, started: DateTime<Local>, with_summary: bool) -> Result<JobDone> {
     let app = meeting.app.clone();
-    let done = meeting.finish();
+    let mut done = meeting.finish();
     if done.lines.is_empty() {
         return Ok(JobDone::Empty("No speech was recorded in that meeting.".into()));
     }
     let cfg = &sh.cfg;
     let path = notes::new_note_path(&cfg.notes_dir, "Meetings", started);
-    let mut extra = vec![("participants", if done.had_system { "Me, Others" } else { "Me" }.to_string())];
+    let me_name = if cfg.your_name.trim().is_empty() { "Me" } else { cfg.your_name.trim() };
+    let voices = if cfg.detect_speakers { diarize(sh, &mut done, me_name) } else { Vec::new() };
+    if voices.is_empty() {
+        done.lines.iter_mut().filter(|l| l.speaker == "Me").for_each(|l| l.speaker = me_name.to_string());
+    }
+    done.lines = merge_turns(std::mem::take(&mut done.lines));
+    let mut extra = vec![("participants", crate::speakers::participants(&done.lines).join(", "))];
+    let guessed: Vec<&str> = voices.iter().filter(|v| v.guessed).map(|v| v.label.as_str()).collect();
+    if !guessed.is_empty() {
+        extra.push(("unconfirmed", guessed.join(", ")));
+    }
+    if let (Some(h), false) = (&sh.history, voices.is_empty()) {
+        let rows: Vec<(String, Vec<f32>, usize)> = voices.iter().map(|v| (v.label.clone(), v.centroid.clone(), v.n)).collect();
+        if let Err(e) = h.save_note_speakers(&path.to_string_lossy(), &rows) {
+            eprintln!("saving voices: {e:#}");
+        }
+    }
     if let Some(a) = &app {
         extra.push(("app", a.clone()));
     }
@@ -662,7 +749,7 @@ fn save_meeting(sh: &Shared, meeting: Meeting, started: DateTime<Local>, with_su
     let title = format!("# Meeting · {}", started.format("%a %d %b %Y, %H:%M"));
     let transcript = transcript_md(&done.lines);
     let write = |summary: &str| {
-        let body = format!("{title}\n\n## Summary\n\n{summary}\n\n## Transcript\n\n{transcript}");
+        let body = format!("{title}\n\n## {}\n\n{summary}\n\n## Transcript\n\n{transcript}", cfg.summary_mode.heading());
         notes::write_note(&path, "meeting", started, done.duration_s, &body, &extra)
     };
     // Save the transcript first so nothing is lost if summarizing fails or the app quits.
@@ -677,10 +764,10 @@ fn save_meeting(sh: &Shared, meeting: Meeting, started: DateTime<Local>, with_su
             notes::fmt_duration(done.duration_s),
             extra[0].1
         );
-        match summarize(&sh.pool, &model, cfg.llm.ctx, &done.lines, &head) {
+        match crate::summary::summarize(&sh.pool, &model, cfg.llm.ctx, &done.lines, &head, cfg.summary_mode) {
             Ok(s) => {
                 write(&s)?;
-                note = preview(&s.replace("### Summary", ""));
+                note = preview(&s.lines().filter(|l| !l.starts_with('#')).collect::<Vec<_>>().join(" "));
             }
             Err(e) => {
                 write(&format!("_Summary failed: {e}_"))?;

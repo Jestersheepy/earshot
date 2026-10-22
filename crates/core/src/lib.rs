@@ -5,4 +5,5 @@ pub mod clipboard;
 pub mod hotkeys;
 pub mod micwatch;
 pub mod segment;
+pub mod speakers;
 pub mod stt;

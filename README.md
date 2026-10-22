@@ -2,12 +2,13 @@
 
 Local dictation, voice notes and meeting notes for Windows. A small floating pill that keeps your voice on your machine.
 
-- **Dictate**: hold **Ctrl+Win**, speak, release. The text is pasted wherever your cursor is, tidied by a small local model (fillers, "no wait, Thursday", spoken lists). Double-tap to keep it listening hands-free.
+- **Dictate**: hold **Ctrl+Win**, speak, release. The text is pasted wherever your cursor is, tidied by a small local model (fillers, "no wait, Thursday", spoken lists). Double-tap to keep it listening hands-free; clicking the dot does the same by default.
 - **Command mode**: select text, hold **Ctrl+Win+Alt** and say what to do ("make this friendlier", "turn this into bullets"). With nothing selected, it writes new text.
 - **Paste last**: **Alt+Shift+V** pastes your latest dictation again. Every dictation is kept in History.
-- **Voice note**: **Ctrl+Alt+N** (or click the pill) to start and stop. Saved as Markdown with the audio alongside.
-- **Meeting notes**: **Ctrl+Alt+M**, or say Record when Earshot spots Zoom, Teams, Slack, Discord, Webex or a browser call using your mic. Your mic is **Me**, the system audio is **Others**. You get a timestamped transcript and a local summary with decisions and action items; recording stops by itself when the call ends.
-- **Earshot window**: double-click the pill (or use the tray) to browse and search notes, play back audio from any line, see dictation history, and change settings, the dictionary and snippets.
+- **Voice note**: **Ctrl+Alt+N** to start and stop. Saved as Markdown with the audio alongside.
+- **Meeting notes**: **Ctrl+Alt+M**, or say Record when Earshot spots Zoom, Teams, Slack, Discord, Webex or a browser call using your mic. Voices are told apart (you, Speaker 1, 2, …); name someone once and Earshot recognises their voice next time. You get a timestamped transcript and a local summary at the depth you choose: Concise, Standard (every action item) or Nuanced (also what was left unsaid, with suggested next steps). Recording stops by itself when the call ends.
+- **The dot**: right-click for notes, meetings and what a click does (dictate, voice note, meeting or the panel). Its size, idle style, accent colour and hover hint are yours to choose.
+- **Panel**: double-click the dot (or use the tray) and a compact panel opens beside it: today's stats, recent notes, search, dictation history and settings. Expand it into a full window when you want more room.
 
 Everything runs on the CPU with no network calls. Only the one-time model download needs the internet.
 
@@ -15,8 +16,9 @@ Everything runs on the CPU with no network calls. Only the one-time model downlo
 |---|---|---|---|
 | Speech-to-text | [Underdog Bark 3.0 Plus](https://huggingface.co/ConwayResearch/Underdog-Bark-3.0-Plus), int8 ONNX encoder, Rust TDT decoder | 890 MB | about 900 MB while loaded; unloaded after 15 minutes idle |
 | Formatting, command mode | [LFM2-1.2B](https://huggingface.co/LiquidAI/LFM2-1.2B-GGUF) Q4_K_M through llama.cpp's `llama-server` | 730 MB | about 1 GB, kept warm 5 minutes after use |
-| Summaries | [LFM2-2.6B-Transcript](https://huggingface.co/LiquidAI/LFM2-2.6B-Transcript) Q4_K_M, same server | 1.6 GB | about 2–3 GB, only while summarizing |
-| App | Rust + Tauri; the pill, menu and pop-ups are drawn natively, the window is WebView2 only while open | ~20 MB | about 30 MB idle |
+| Summaries | [Qwen3-4B-Instruct-2507](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507) Q4_K_M, same server | 2.5 GB | about 3–4 GB, only while summarizing |
+| Speakers | [CAM++](https://github.com/modelscope/3D-Speaker) voice embeddings (sherpa-onnx export), same ONNX Runtime | 28 MB | a few MB, only while saving a meeting |
+| App | Rust + Tauri; the dot, menu and pop-ups are drawn natively, the panel is WebView2 only while open (freed 3 minutes after closing) | ~20 MB | about 30 MB idle |
 
 ## Install
 

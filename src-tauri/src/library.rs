@@ -1,12 +1,15 @@
 //! Reads the notes folder for the Notes window: front matter, summary, transcript lines. The Markdown
 //! files stay the source of truth (Obsidian-friendly); nothing here is cached.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use regex::Regex;
 use serde::Serialize;
 use std::sync::LazyLock;
+
+use crate::summary::Mode;
 
 static LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\*\*\[(\d+):(\d+)(?::(\d+))?\] ([^:*]+):\*\* ?(.*)$").unwrap());
 
@@ -34,9 +37,12 @@ pub struct TranscriptLine {
 #[derive(Serialize)]
 pub struct NoteDetail {
     pub meta: NoteMeta,
-    pub summary: Option<String>,
+    /// Generated summaries by mode name ("concise", "standard", "nuanced").
+    pub summaries: BTreeMap<String, String>,
     pub lines: Vec<TranscriptLine>,
     pub body: String,
+    /// Speakers named from voice memory that you haven't confirmed in this note.
+    pub unconfirmed: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -47,6 +53,8 @@ pub struct SearchHit {
 
 struct Parsed {
     front: Vec<(String, String)>,
+    summaries: BTreeMap<String, String>,
+    /// The one shown in previews: standard if there is one.
     summary: Option<String>,
     lines: Vec<TranscriptLine>,
     body: String,
@@ -61,7 +69,8 @@ fn parse(text: &str) -> Parsed {
         ),
         None => (Vec::new(), text.clone()),
     };
-    let mut summary: Option<String> = None;
+    let mut summaries: BTreeMap<String, String> = BTreeMap::new();
+    let mut mode = Mode::Standard;
     let mut lines = Vec::new();
     let mut body = Vec::new();
     let mut section = "";
@@ -70,14 +79,15 @@ fn parse(text: &str) -> Parsed {
             continue;
         }
         if let Some(h) = l.strip_prefix("## ") {
-            section = match h.trim().to_lowercase().as_str() {
-                "summary" => "summary",
-                "transcript" => "transcript",
+            section = match (Mode::from_heading(h), h.trim().to_lowercase().as_str()) {
+                (Some(m), _) => {
+                    mode = m;
+                    summaries.insert(m.name().into(), String::new());
+                    "summary"
+                }
+                (None, "transcript") => "transcript",
                 _ => "body",
             };
-            if section == "summary" {
-                summary = Some(String::new());
-            }
             continue;
         }
         if let Some(c) = LINE.captures(l) {
@@ -88,7 +98,7 @@ fn parse(text: &str) -> Parsed {
         }
         match section {
             "summary" => {
-                let s = summary.as_mut().unwrap();
+                let s = summaries.get_mut(mode.name()).unwrap();
                 s.push_str(l);
                 s.push('\n');
             }
@@ -96,8 +106,13 @@ fn parse(text: &str) -> Parsed {
             _ => body.push(l),
         }
     }
-    let summary = summary.map(|s| s.trim().to_string()).filter(|s| !s.is_empty() && !s.starts_with("_Too short"));
-    Parsed { front, summary, lines, body: body.join("\n").trim().to_string() }
+    let summaries: BTreeMap<String, String> = summaries
+        .into_iter()
+        .map(|(k, s)| (k, s.trim().to_string()))
+        .filter(|(_, s)| !s.is_empty() && !s.starts_with("_Too short"))
+        .collect();
+    let summary = ["standard", "concise", "nuanced"].iter().find_map(|k| summaries.get(*k).cloned());
+    Parsed { front, summaries, summary, lines, body: body.join("\n").trim().to_string() }
 }
 
 fn get<'a>(front: &'a [(String, String)], key: &str) -> Option<&'a str> {
@@ -229,7 +244,8 @@ pub fn detail(path: &Path) -> Result<NoteDetail> {
     let text = std::fs::read_to_string(path)?;
     let p = parse(&text);
     let meta = meta(path, &p);
-    Ok(NoteDetail { meta, summary: p.summary, lines: p.lines, body: p.body })
+    let unconfirmed = get(&p.front, "unconfirmed").map_or(Vec::new(), |u| u.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect());
+    Ok(NoteDetail { meta, summaries: p.summaries, lines: p.lines, body: p.body, unconfirmed })
 }
 
 /// Set (or add) a front-matter key, keeping everything else byte for byte.
@@ -251,16 +267,25 @@ pub fn set_front(path: &Path, key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-/// Replace the "## Summary" section's content (adding the section if missing).
-pub fn set_summary(path: &Path, summary: &str) -> Result<()> {
+/// Replace one mode's summary section, adding it before the transcript if missing.
+pub fn set_summary(path: &Path, mode: Mode, summary: &str) -> Result<()> {
     let text = std::fs::read_to_string(path)?.replace("\r\n", "\n");
-    let out = match (text.find("\n## Summary\n"), text.find("\n## Transcript\n")) {
-        (Some(a), Some(b)) if a < b => format!("{}\n## Summary\n\n{}\n{}", &text[..a], summary.trim(), &text[b..]),
-        (None, Some(b)) => format!("{}\n## Summary\n\n{}\n{}", &text[..b], summary.trim(), &text[b..]),
-        _ => bail!("this note has no transcript to summarize"),
-    };
-    std::fs::write(path, out)?;
+    std::fs::write(path, with_summary(&text, mode, summary)?)?;
     Ok(())
+}
+
+fn with_summary(text: &str, mode: Mode, summary: &str) -> Result<String> {
+    let heading = format!("\n## {}\n", mode.heading());
+    let Some(transcript) = text.find("\n## Transcript\n") else { bail!("this note has no transcript to summarize") };
+    Ok(match text.find(&heading) {
+        Some(a) => {
+            // the section runs to the next "## " heading
+            let start = a + heading.len();
+            let end = text[start..].find("\n## ").map_or(text.len(), |i| start + i);
+            format!("{}{heading}\n{}\n{}", &text[..a], summary.trim(), &text[end..])
+        }
+        None => format!("{}{heading}\n{}\n{}", &text[..transcript], summary.trim(), &text[transcript..]),
+    })
 }
 
 /// Transcript lines as segment Lines, for re-summarizing.
@@ -286,6 +311,13 @@ mod tests {
         assert_eq!(p.lines.len(), 2);
         assert_eq!(p.lines[1].t, 65);
         assert_eq!(p.summary.as_deref(), Some("### Summary\nShipped it."));
+
+        let md = with_summary(md, Mode::Concise, "### TL;DR\n- Shipped.").unwrap();
+        let md = with_summary(&md, Mode::Standard, "### Summary\nShipped it, twice.").unwrap();
+        let p = parse(&md);
+        assert_eq!(p.summaries["concise"], "### TL;DR\n- Shipped.");
+        assert_eq!(p.summaries["standard"], "### Summary\nShipped it, twice.");
+        assert_eq!(p.lines.len(), 2);
         let v = parse("---\ntype: voice-note\naudio: [[a.wav]]\n---\n\nSo anyone could be talking right now, and it should pick up.");
         assert_eq!(meta(Path::new("C:/n/Voice notes/a.md"), &v).title, "So anyone could be talking right now, and…");
     }

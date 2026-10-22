@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api, type Config, type Settings } from "$lib/api";
+  import { api, applyLook, type Config, type Settings } from "$lib/api";
   import Icon from "$lib/Icon.svelte";
+  import DotPreview from "$lib/DotPreview.svelte";
 
   let settings = $state<Settings | null>(null);
   let cfg = $state<Config | null>(null);
@@ -15,6 +16,22 @@
   let newApp = $state("");
   let recording = $state<string | null>(null);
   let held: string[] = [];
+  let voices = $state<[string, number][]>([]);
+
+  const SWATCHES = ["#4f6ef7", "#14a38b", "#d6457a", "#8b6cf0", "#2f9e66", "#e0662f", "#3d3a35"];
+  const clicks: { id: Config["pill"]["click"]; label: string }[] = [
+    { id: "dictate", label: "Dictate" },
+    { id: "note", label: "Voice note" },
+    { id: "meeting", label: "Meeting" },
+    { id: "panel", label: "Panel" },
+  ];
+  let accentShown = $derived(cfg && cfg.pill.accent !== "auto" ? cfg.pill.accent : (settings?.accent ?? "#4f6ef7"));
+
+  // Preview theme and accent while editing; Save makes them stick, Discard puts them back.
+  $effect(() => {
+    if (!cfg || !settings) return;
+    applyLook({ ...settings, config: cfg, accent: accentShown });
+  });
 
   const hotkeys: { key: keyof Config["hotkeys"]; label: string; hint: string }[] = [
     { key: "dictate", label: "Dictate", hint: "Hold and speak; release to paste. Double-tap to go hands-free." },
@@ -29,8 +46,18 @@
     settings = await api.getSettings();
     cfg = settings.config;
     saved = JSON.stringify(cfg);
+    voices = await api.listVoices().catch(() => []);
   }
-  onMount(load);
+  onMount(() => {
+    load();
+    // leaving with unsaved changes drops the preview
+    return () => settings && applyLook(settings);
+  });
+
+  async function forget(name: string) {
+    await api.forgetVoice(name);
+    voices = voices.filter(([n]) => n !== name);
+  }
 
   async function save() {
     if (!cfg) return;
@@ -41,6 +68,7 @@
       flash = true;
       setTimeout(() => (flash = false), 1600);
       settings = await api.getSettings();
+      applyLook(settings);
     } catch (e) {
       error = String(e);
     }
@@ -100,12 +128,109 @@
 
 {#if cfg && settings}
   <div class="wrap">
-    <header>
-      <h2>Settings</h2>
-      <p class="sub">Everything runs on this PC. Nothing is sent anywhere.</p>
-    </header>
-
     <div class="scroll">
+      <header>
+        <h2>Settings</h2>
+        <p class="sub">Everything runs on this PC. Nothing is sent anywhere.</p>
+      </header>
+
+      <section>
+        <h3>General</h3>
+        <div class="card">
+          <div class="row stack">
+            <div class="label">
+              <div>Clicking the dot</div>
+              <div class="hint">Also on the dot’s right-click menu. Holding {pretty(cfg.hotkeys.dictate).join("+")} always dictates.</div>
+            </div>
+            <div class="seg full">
+              {#each clicks as c (c.id)}
+                <button class:on={cfg.pill.click === c.id} onclick={() => (cfg!.pill.click = c.id)}>{c.label}</button>
+              {/each}
+            </div>
+          </div>
+          <div class="row">
+            <div class="label"><div>Theme</div></div>
+            <div class="seg">
+              {#each [["system", "System"], ["light", "Light"], ["dark", "Dark"]] as [id, label]}
+                <button class:on={cfg.theme === id} onclick={() => (cfg!.theme = id as Config["theme"])}>{label}</button>
+              {/each}
+            </div>
+          </div>
+          <div class="row">
+            <div class="label">
+              <div>Start with Windows</div>
+              <div class="hint">Earshot waits quietly in the tray, ready for your shortcuts.</div>
+            </div>
+            <label class="switch">
+              <input
+                type="checkbox"
+                checked={settings!.autostart}
+                onchange={async (e) => {
+                  const box = e.currentTarget;
+                  const on = box.checked;
+                  try {
+                    await api.setAutostart(on);
+                    settings!.autostart = on;
+                  } catch (err) {
+                    error = String(err);
+                    box.checked = !on;
+                  }
+                }}
+              /><span></span>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h3>The dot</h3>
+        <div class="card">
+          <DotPreview pill={cfg.pill} accent={accentShown} dictate={pretty(cfg.hotkeys.dictate).join("+")} />
+          <div class="row">
+            <div class="label"><div>Size</div></div>
+            <div class="seg">
+              {#each [["small", "Small"], ["medium", "Medium"], ["large", "Large"]] as [id, label]}
+                <button class:on={cfg.pill.size === id} onclick={() => (cfg!.pill.size = id as Config["pill"]["size"])}>{label}</button>
+              {/each}
+            </div>
+          </div>
+          <div class="row">
+            <div class="label">
+              <div>When idle</div>
+              <div class="hint">{cfg.pill.idle === "breathing" ? "A slow glow in your accent colour." : cfg.pill.idle === "mic" ? "A mic, so it’s obvious what it is." : "A quiet dot."}</div>
+            </div>
+            <div class="seg">
+              {#each [["dot", "Dot"], ["mic", "Mic"], ["breathing", "Breathing"]] as [id, label]}
+                <button class:on={cfg.pill.idle === id} onclick={() => (cfg!.pill.idle = id as Config["pill"]["idle"])}>{label}</button>
+              {/each}
+            </div>
+          </div>
+          <div class="row">
+            <div class="label"><div>Accent</div></div>
+            <div class="swatches">
+              <button class="swatch auto" class:on={cfg.pill.accent === "auto"} onclick={() => (cfg!.pill.accent = "auto")} title="Windows accent colour">
+                <span style:background-color={settings.accent}></span>
+              </button>
+              {#each SWATCHES as c (c)}
+                <button class="swatch" class:on={cfg.pill.accent.toLowerCase() === c} onclick={() => (cfg!.pill.accent = c)} aria-label={c}>
+                  <span style:background-color={c}></span>
+                </button>
+              {/each}
+              <label class="swatch custom" class:on={cfg.pill.accent !== "auto" && !SWATCHES.includes(cfg.pill.accent.toLowerCase())} title="Custom colour">
+                <input type="color" value={accentShown} oninput={(e) => (cfg!.pill.accent = e.currentTarget.value)} />
+                <span><Icon name="plus" size={11} /></span>
+              </label>
+            </div>
+          </div>
+          <div class="row">
+            <div class="label">
+              <div>Hover peek</div>
+              <div class="hint">Hovering the dot shows what a click does.</div>
+            </div>
+            <label class="switch"><input type="checkbox" bind:checked={cfg.pill.peek} /><span></span></label>
+          </div>
+        </div>
+      </section>
       <section>
         <h3>Shortcuts</h3>
         <div class="card">
@@ -218,6 +343,44 @@
         <div class="card">
           <div class="row">
             <div class="label">
+              <div>Summary</div>
+              <div class="hint">Concise: TL;DR and action items. Standard: every detail and action item. Nuanced: also reads between the lines and suggests actions (slower).</div>
+            </div>
+            <div class="seg">
+              {#each ["concise", "standard", "nuanced"] as const as m}
+                <button class:on={cfg.summary_mode === m} onclick={() => (cfg!.summary_mode = m)}>{m[0].toUpperCase() + m.slice(1)}</button>
+              {/each}
+            </div>
+          </div>
+          <div class="row">
+            <div class="label">
+              <div>Your name</div>
+              <div class="hint">How you appear in meeting transcripts.</div>
+            </div>
+            <input class="field short" bind:value={cfg.your_name} placeholder="Me" />
+          </div>
+          <div class="row">
+            <div class="label">
+              <div>Tell speakers apart</div>
+              <div class="hint">Labels voices Speaker 1, 2, … and recognises people you’ve named before.</div>
+            </div>
+            <label class="switch"><input type="checkbox" bind:checked={cfg.detect_speakers} /><span></span></label>
+          </div>
+          {#if cfg.detect_speakers && voices.length}
+            <div class="row stack">
+              <div class="label">
+                <div>Voices Earshot knows</div>
+                <div class="hint">Name someone in a meeting and their voice is remembered here, on this PC only.</div>
+              </div>
+              <div class="tags plain">
+                {#each voices as [name] (name)}
+                  <span class="tag">{name}<button onclick={() => forget(name)} aria-label="Forget {name}" title="Forget this voice"><Icon name="x" size={11} /></button></span>
+                {/each}
+              </div>
+            </div>
+          {/if}
+          <div class="row">
+            <div class="label">
               <div>Offer to record calls</div>
               <div class="hint">When Zoom, Teams, Slack, Discord, Webex or a browser starts using the mic, ask whether to take notes.</div>
             </div>
@@ -281,29 +444,6 @@
       <section>
         <h3>Performance</h3>
         <div class="card">
-          <div class="row">
-            <div class="label">
-              <div>Start with Windows</div>
-              <div class="hint">Earshot waits quietly in the tray, ready for your shortcuts.</div>
-            </div>
-            <label class="switch">
-              <input
-                type="checkbox"
-                checked={settings!.autostart}
-                onchange={async (e) => {
-                  const box = e.currentTarget;
-                  const on = box.checked;
-                  try {
-                    await api.setAutostart(on);
-                    settings!.autostart = on;
-                  } catch (err) {
-                    error = String(err);
-                    box.checked = !on;
-                  }
-                }}
-              /><span></span>
-            </label>
-          </div>
           <div class="row">
             <div class="label">
               <div>Load speech model at startup</div>
@@ -371,11 +511,13 @@
     flex-direction: column;
     position: relative;
   }
+  .wrap {
+    container-type: inline-size;
+  }
   header {
-    padding: 28px 32px 8px;
-    max-width: 820px;
-    width: 100%;
+    max-width: 680px;
     margin: 0 auto;
+    padding-top: 24px;
   }
   h2 {
     font-size: 22px;
@@ -392,15 +534,40 @@
     padding: 0 32px 100px;
   }
   section {
-    max-width: 756px;
+    max-width: 680px;
     margin: 22px auto 0;
+  }
+  @container (max-width: 560px) {
+    header {
+      padding-top: 14px;
+    }
+    h2 {
+      font-size: 18px;
+    }
+    .scroll {
+      padding: 0 12px 90px;
+    }
+    section {
+      margin-top: 18px;
+    }
+    .row {
+      padding: 12px 14px;
+      gap: 16px;
+    }
+    .snippet {
+      grid-template-columns: 1fr auto;
+    }
+    .snippet textarea {
+      grid-column: 1;
+    }
+    .keys {
+      min-width: 0;
+    }
   }
   h3 {
     font-size: 12px;
     font-weight: 600;
-    color: var(--faint);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    color: var(--muted);
     margin: 0 0 8px 4px;
   }
   .card {
@@ -417,7 +584,7 @@
     padding: 14px 16px;
   }
   .row + .row {
-    border-top: 1px solid var(--border);
+    border-top: 1px solid var(--rule);
   }
   .row.stack {
     flex-direction: column;
@@ -455,7 +622,7 @@
   }
   .keys.recording {
     border-color: var(--accent);
-    box-shadow: 0 0 0 3px rgba(91, 140, 255, 0.18);
+    box-shadow: 0 0 0 3px var(--accent-soft);
   }
   .press {
     font-size: 12.5px;
@@ -468,46 +635,6 @@
     background: var(--bg);
     border: 1px solid var(--border-strong);
     border-bottom-width: 2px;
-  }
-  .switch {
-    position: relative;
-    flex: none;
-    width: 38px;
-    height: 22px;
-  }
-  .switch input {
-    opacity: 0;
-    width: 0;
-    height: 0;
-  }
-  .switch span {
-    position: absolute;
-    inset: 0;
-    border-radius: 22px;
-    background: var(--border-strong);
-    transition: background 0.18s;
-    cursor: pointer;
-  }
-  .switch span::after {
-    content: "";
-    position: absolute;
-    top: 3px;
-    left: 3px;
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    background: white;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
-    transition: transform 0.18s;
-  }
-  .switch input:checked + span {
-    background: var(--accent);
-  }
-  .switch input:checked + span::after {
-    transform: translateX(16px);
-  }
-  .switch input:focus-visible + span {
-    box-shadow: 0 0 0 3px rgba(91, 140, 255, 0.3);
   }
   .tags {
     display: flex;
@@ -525,8 +652,8 @@
     gap: 4px;
     padding: 2px 4px 2px 10px;
     border-radius: 14px;
-    background: var(--selected);
-    font-size: 13px;
+    background: var(--accent-soft);
+    font-size: 12.5px;
   }
   .tag button {
     border: 0;
@@ -585,28 +712,64 @@
     font-family: "Cascadia Mono", Consolas, monospace;
     font-size: 12.5px;
   }
-  .seg {
-    display: flex;
-    padding: 2px;
-    border-radius: 8px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-  }
-  .seg button {
-    border: 0;
-    background: transparent;
-    padding: 3px 10px;
-    border-radius: 6px;
-    font-size: 12.5px;
-    color: var(--muted);
-  }
-  .seg button.on {
-    background: var(--raised);
-    color: var(--text);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
-  }
   .wide {
     width: 100%;
+  }
+  .short {
+    width: 160px;
+  }
+  .seg.full {
+    display: flex;
+  }
+  .seg.full button {
+    flex: 1;
+  }
+  .tags.plain {
+    border: 0;
+    padding: 0;
+    background: transparent;
+  }
+  .swatches {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 4px;
+  }
+  .swatch {
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border-radius: 50%;
+    border: 2px solid transparent;
+    background: transparent;
+    cursor: pointer;
+    transition: border-color 0.15s;
+  }
+  .swatch span {
+    display: grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    color: var(--muted);
+  }
+  .swatch.on {
+    border-color: var(--text);
+  }
+  .swatch.auto span {
+    background-image: linear-gradient(135deg, transparent 50%, rgba(255, 255, 255, 0.5) 50%);
+  }
+  .swatch.custom span {
+    background: var(--hover);
+  }
+  .swatch.custom input {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
   }
   .num {
     display: flex;

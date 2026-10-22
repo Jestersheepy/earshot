@@ -3,6 +3,7 @@
 use tiny_skia::Pixmap;
 
 use crate::paint::*;
+use crate::theme::{IdleStyle, PillSize, style};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Accent {
@@ -15,7 +16,7 @@ pub enum Accent {
 impl Accent {
     pub fn color(self) -> Rgba {
         match self {
-            Accent::Dictate => Rgba(91, 140, 255, 255),
+            Accent::Dictate => style().accent,
             Accent::Command => Rgba(167, 139, 250, 255),
             Accent::Note => Rgba(245, 165, 36, 255),
             Accent::Meeting => Rgba(240, 74, 74, 255),
@@ -38,10 +39,20 @@ pub enum PillState {
 }
 
 impl PillState {
-    /// Target size in logical px.
-    pub fn size(&self, hover: bool) -> (f32, f32) {
+    /// Target size in logical px. `peek`: idle and hovered long enough to show the hint bar.
+    pub fn size(&self, hover: bool, peek: bool) -> (f32, f32) {
         match self {
-            PillState::Idle => if hover { (26.0, 26.0) } else { (20.0, 20.0) },
+            PillState::Idle if peek => (peek_width(), 36.0),
+            PillState::Idle => {
+                let st = style();
+                let d = match st.size {
+                    PillSize::Small => 16.0,
+                    PillSize::Medium => 20.0,
+                    PillSize::Large => 26.0,
+                } + if st.idle == IdleStyle::Mic { 6.0 } else { 0.0 };
+                let d = if hover { d + 6.0 } else { d };
+                (d, d)
+            }
             PillState::Listening(_) => (124.0, 34.0),
             PillState::HandsFree(_) => (152.0, 34.0),
             PillState::Thinking => (66.0, 30.0),
@@ -53,6 +64,8 @@ impl PillState {
 
 pub struct View<'a> {
     pub state: &'a PillState,
+    /// Idle hint bar showing (see `PillState::size`).
+    pub peek: bool,
     /// Current (animated) size, logical px.
     pub w: f32,
     pub h: f32,
@@ -68,11 +81,20 @@ pub struct View<'a> {
     pub scale: f32,
 }
 
-const GLASS_TOP: Rgba = Rgba(44, 45, 51, 250);
-const GLASS_BOTTOM: Rgba = Rgba(24, 25, 29, 250);
-const RIM: Rgba = Rgba(255, 255, 255, 30);
-const WHITE: Rgba = Rgba(245, 246, 250, 255);
-const MUTED: Rgba = Rgba(160, 166, 178, 255);
+const GLASS_TOP: Rgba = Rgba(46, 43, 39, 250);
+const GLASS_BOTTOM: Rgba = Rgba(24, 22, 20, 250);
+const RIM: Rgba = Rgba(255, 255, 255, 32);
+const WHITE: Rgba = Rgba(247, 244, 239, 255);
+const MUTED: Rgba = Rgba(168, 161, 151, 255);
+/// The hint bar's text sizes.
+const PEEK_TITLE: f32 = 13.0;
+const PEEK_HINT: f32 = 12.0;
+
+fn peek_width() -> f32 {
+    let st = style();
+    let f = fonts();
+    34.0 + text_width(&f.semibold, PEEK_TITLE, &st.peek_title) + 12.0 + text_width(&f.regular, PEEK_HINT, &st.peek_hint) + 16.0
+}
 pub const STOP_R: f32 = 11.0;
 
 /// Pill centre within a canvas of `cw`×`ch` logical px.
@@ -81,6 +103,13 @@ pub fn draw(pm: &mut Pixmap, v: &View, cw: f32, ch: f32) {
     let (w, h) = (v.w * s, v.h * s);
     let (x, y) = ((cw * s - w) / 2.0, (ch * s - h) / 2.0);
     let body = capsule(x, y, w, h, h / 2.0);
+    let st = style();
+    if matches!(v.state, PillState::Idle) && st.idle == IdleStyle::Breathing && !v.peek {
+        // a soft halo that swells and fades every 4 s
+        let ph = 0.5 - 0.5 * (v.t * std::f32::consts::TAU / 4.0).cos();
+        let grow = (2.0 + 5.0 * ph) * s;
+        fill(pm, &capsule(x - grow, y - grow, w + 2.0 * grow, h + 2.0 * grow, h / 2.0 + grow), st.accent.alpha(0.28 * (1.0 - ph)));
+    }
     shadow(pm, &body, 10.0 * s, 2.5 * s, Rgba(0, 0, 0, 120));
     fill_vgrad(pm, &body, y, y + h, GLASS_TOP, GLASS_BOTTOM);
     stroke(pm, &capsule(x + 0.5 * s, y + 0.5 * s, w - s, h - s, (h - s) / 2.0), RIM, s);
@@ -90,10 +119,28 @@ pub fn draw(pm: &mut Pixmap, v: &View, cw: f32, ch: f32) {
     let a = v.content;
     let (cx, cy) = (x + w / 2.0, y + h / 2.0);
     match v.state {
-        PillState::Idle => {
-            let r = if v.hover { 3.6 } else { 3.0 } * s;
-            fill(pm, &circle(cx, cy, r), (if v.hover { WHITE } else { MUTED }).alpha(a));
+        PillState::Idle if v.peek => {
+            let f = fonts();
+            fill(pm, &circle(x + 18.0 * s, cy, 4.2 * s), st.accent.alpha(a));
+            let tx = x + 34.0 * s;
+            text(pm, &f.semibold, PEEK_TITLE * s, tx, cy + 4.6 * s, &st.peek_title, WHITE.alpha(a));
+            let hx = tx + (text_width(&f.semibold, PEEK_TITLE, &st.peek_title) + 12.0) * s;
+            text(pm, &f.regular, PEEK_HINT * s, hx, cy + 4.3 * s, &st.peek_hint, MUTED.alpha(a));
         }
+        PillState::Idle => match st.idle {
+            IdleStyle::Dot => {
+                let r = (h / s * 0.15).max(2.6) * s;
+                fill(pm, &circle(cx, cy, r), (if v.hover { st.accent } else { MUTED }).alpha(a));
+            }
+            IdleStyle::Mic => {
+                let k = h / s / 26.0;
+                crate::menu::draw_icon(pm, crate::menu::Icon::Mic, cx, cy + 0.5 * s, s * k.clamp(0.6, 0.95), (if v.hover { WHITE } else { MUTED }).alpha(a));
+            }
+            IdleStyle::Breathing => {
+                let r = (h / s * 0.17).max(2.8) * s;
+                fill(pm, &circle(cx, cy, r), st.accent.alpha(a));
+            }
+        },
         PillState::Listening(acc) => {
             dot(pm, x + 17.0 * s, cy, *acc, v.t, s, a, false);
             bars(pm, x + 31.0 * s, x + w - 15.0 * s, cy, h * 0.62, v.levels, s, a);
