@@ -1,5 +1,6 @@
 pub mod config;
 mod controller;
+mod history;
 pub mod llm;
 mod meeting;
 mod notes;
@@ -113,6 +114,9 @@ pub fn run() {
                 Ok(b) => hotkeys::start(b, forward(&tx, AppEvent::Hotkey)),
                 Err(e) => eprintln!("hotkeys: {e:#}"),
             }
+            // One registry read every 3 s; the controller applies the detection settings.
+            let mic = forward(&tx, AppEvent::Mic);
+            earshot_core::micwatch::watch(mic, Duration::from_secs(3), Duration::from_secs(5));
             tray(app, tx.clone())?;
             let ctl = Controller::new(cfg, engine, pool, tx.clone(), overlay, app.handle().clone());
             std::thread::spawn(move || ctl.run(rx));

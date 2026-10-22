@@ -12,18 +12,21 @@ use chrono::{DateTime, Local};
 use earshot_core::audio::{Capture, Source, write_wav};
 use earshot_core::segment::transcript_md;
 use earshot_core::stt::{Engine, SR};
+use earshot_core::micwatch::MicEvent;
 use earshot_core::{clipboard, hotkeys};
 use earshot_overlay::menu::{Icon, MenuItem, ToastSpec};
 use earshot_overlay::pill::{Accent, PillState};
 use earshot_overlay::{Overlay, UiEvent};
 
 use crate::config::Config;
+use crate::history::{Entry, History};
 use crate::llm::Pool;
 use crate::meeting::{Meeting, summarize, worth_summarizing};
 use crate::text::FORMAT_CTX;
 use crate::{notes, text};
 
 const TAP_MS: u64 = 300;
+const AUTO_STOP: Duration = Duration::from_secs(10);
 const DOUBLE_TAP: Duration = Duration::from_millis(600);
 const MIN_AUDIO_S: f32 = 0.3;
 
@@ -33,12 +36,15 @@ pub enum AppEvent {
     /// A tray or pill menu item id.
     Action(String),
     Job(JobDone),
+    Mic(MicEvent),
 }
 
 pub enum JobDone {
     Dictated(String),
     Saved { title: String, body: String, path: PathBuf },
     Failed(String),
+    /// Nothing worth saving (silence); a notice, not an error.
+    Empty(String),
 }
 
 struct Dictation {
@@ -63,6 +69,7 @@ struct Shared {
     engine: Arc<Engine>,
     pool: Pool,
     tx: Sender<AppEvent>,
+    history: Option<Arc<History>>,
 }
 
 pub struct Controller {
@@ -78,12 +85,20 @@ pub struct Controller {
     next_toast: u64,
     toast_paths: HashMap<u64, PathBuf>,
     quitting: bool,
+    /// "Meeting detected" prompts on screen: toast id -> (app, friendly name).
+    prompts: HashMap<u64, (String, String)>,
+    /// The app whose call started the current meeting; when it lets go of the mic, we offer to stop.
+    meeting_app: Option<(String, String)>,
+    /// "Call ended" countdown: stop at this time unless the user keeps recording.
+    auto_stop: Option<(Instant, u64)>,
 }
 
 impl Controller {
     pub fn new(cfg: Config, engine: Arc<Engine>, pool: Pool, tx: Sender<AppEvent>, overlay: Overlay, app: tauri::AppHandle) -> Self {
+        let history = History::open().map(Arc::new).map_err(|e| eprintln!("history: {e:#}")).ok();
+        let last_text = history.as_ref().and_then(|h| h.last_text());
         Self {
-            sh: Shared { cfg: Arc::new(cfg), engine, pool, tx },
+            sh: Shared { cfg: Arc::new(cfg), engine, pool, tx, history },
             overlay,
             app,
             dict: None,
@@ -91,10 +106,13 @@ impl Controller {
             jobs: 0,
             flash: None,
             shown: PillState::Idle,
-            last_text: None,
+            last_text,
             next_toast: 1,
             toast_paths: HashMap::new(),
             quitting: false,
+            prompts: HashMap::new(),
+            meeting_app: None,
+            auto_stop: None,
         }
     }
 
@@ -117,6 +135,7 @@ impl Controller {
                 AppEvent::Ui(e) => self.on_ui(e),
                 AppEvent::Action(a) => self.action(&a),
                 AppEvent::Job(j) => self.on_job(j),
+                AppEvent::Mic(e) => self.on_mic(e),
             }
             self.tick();
         }
@@ -151,6 +170,13 @@ impl Controller {
         if state != self.shown {
             self.overlay.set_state(state.clone());
             self.shown = state;
+        }
+        if self.auto_stop.is_some_and(|(at, _)| Instant::now() >= at) {
+            let (_, toast) = self.auto_stop.take().unwrap();
+            self.overlay.close_toast(toast);
+            if matches!(self.rec, Some(Recording::Meeting { .. })) {
+                self.toggle_meeting();
+            }
         }
         if self.quitting && self.jobs == 0 && self.rec.is_none() {
             self.overlay.quit();
@@ -252,13 +278,27 @@ impl Controller {
         self.job(move |sh| {
             // Grab the selection first, while it's still selected.
             let selection = if command { clipboard::copy_selection() } else { None };
+            let t0 = Instant::now();
             let raw = sh.engine.transcribe(&wave)?;
             if raw.trim().is_empty() {
                 return Ok(JobDone::Dictated(String::new()));
             }
-            let out = if command { run_command(&sh, &raw, selection.as_deref())? } else { format_dictation(&sh, &raw) };
+            let app = clipboard::foreground_app();
+            let (out, llm) = if command {
+                (run_command(&sh, &raw, selection.as_deref())?, true)
+            } else {
+                text::smart_format(&sh.pool, &sh.cfg, &raw, app.as_deref())
+            };
             if !out.is_empty() && !clipboard::paste(&out) {
                 anyhow::bail!("Couldn't paste (clipboard busy)");
+            }
+            if let Some(h) = &sh.history {
+                let mode = if command { "command" } else { "dictate" };
+                let ms = t0.elapsed().as_millis() as u64;
+                let entry = Entry { mode, app: app.as_deref(), raw: &raw, text: &out, llm, ms };
+                if let Err(e) = h.add(&entry) {
+                    eprintln!("history: {e:#}");
+                }
             }
             Ok(JobDone::Dictated(out))
         });
@@ -286,22 +326,78 @@ impl Controller {
 
     fn toggle_meeting(&mut self) {
         match self.rec.take() {
-            None => match Meeting::start(self.sh.engine.clone(), clipboard::foreground_app()) {
-                Ok((meeting, warning)) => {
-                    self.rec = Some(Recording::Meeting { meeting, started: Local::now() });
-                    if let Some(w) = warning {
-                        self.info("Recording your mic only", &w);
-                    }
-                }
-                Err(e) => self.fail(format!("Couldn't start recording: {e}")),
-            },
+            None => self.start_meeting(None),
             Some(Recording::Meeting { meeting, started }) => {
+                self.meeting_app = None;
+                if let Some((_, toast)) = self.auto_stop.take() {
+                    self.overlay.close_toast(toast);
+                }
                 let with_summary = !self.quitting;
                 self.job(move |sh| save_meeting(&sh, meeting, started, with_summary));
             }
             Some(other) => {
                 self.rec = Some(other);
                 self.info("A voice note is recording", "Stop it before starting a meeting.");
+            }
+        }
+    }
+
+    /// `detected`: the (app, name) whose mic use prompted this; the meeting then ends with the call.
+    fn start_meeting(&mut self, detected: Option<(String, String)>) {
+        let label = detected.as_ref().map(|(_, name)| name.clone()).or_else(clipboard::foreground_app);
+        match Meeting::start(self.sh.engine.clone(), label) {
+            Ok((meeting, warning)) => {
+                self.rec = Some(Recording::Meeting { meeting, started: Local::now() });
+                self.meeting_app = detected;
+                if let Some(w) = warning {
+                    self.info("Recording your mic only", &w);
+                }
+            }
+            Err(e) => self.fail(format!("Couldn't start recording: {e}")),
+        }
+    }
+
+    // ---- meeting detection -------------------------------------------------------------------
+
+    fn on_mic(&mut self, e: MicEvent) {
+        match e {
+            MicEvent::Started { app, name, known } => {
+                let default = if known { "ask" } else { "never" };
+                let policy = self.sh.cfg.meeting_apps.get(&app).map_or(default, String::as_str);
+                if !self.sh.cfg.detect_meetings || policy == "never" {
+                    return;
+                }
+                match &self.rec {
+                    // Already recording a meeting by hand: let this call end it.
+                    Some(Recording::Meeting { .. }) if self.meeting_app.is_none() => self.meeting_app = Some((app, name)),
+                    Some(_) => {}
+                    None if policy == "always" => {
+                        self.start_meeting(Some((app, name.clone())));
+                        self.info(&format!("Recording your {name} call"), "Notes are saved when the call ends.");
+                    }
+                    None => {
+                        let body = "Record and transcribe this call? Notes stay on this PC.";
+                        let buttons = vec![("record", "Record"), ("dismiss", "Not now")];
+                        let title = format!("Meeting detected \u{b7} {name}");
+                        let id = self.toast(&title, body, Icon::People, Accent::Meeting, buttons, 20.0);
+                        self.prompts.insert(id, (app, name));
+                    }
+                }
+            }
+            MicEvent::Stopped { app } => {
+                let stale: Vec<u64> = self.prompts.iter().filter(|(_, (a, _))| *a == app).map(|(id, _)| *id).collect();
+                for id in stale {
+                    self.prompts.remove(&id);
+                    self.overlay.close_toast(id);
+                }
+                let ours = self.meeting_app.as_ref().is_some_and(|(a, _)| *a == app);
+                if ours && matches!(self.rec, Some(Recording::Meeting { .. })) && self.auto_stop.is_none() {
+                    let name = self.meeting_app.as_ref().map(|(_, n)| n.clone()).unwrap_or_default();
+                    let buttons = vec![("save_now", "Save now"), ("keep", "Keep recording")];
+                    let body = "Saving your meeting notes in 10 seconds.";
+                    let id = self.toast(&format!("{name} call ended"), body, Icon::Record, Accent::Meeting, buttons, 10.0);
+                    self.auto_stop = Some((Instant::now() + AUTO_STOP, id));
+                }
             }
         }
     }
@@ -332,6 +428,7 @@ impl Controller {
                 self.toast_paths.insert(id, path);
             }
             JobDone::Failed(e) => self.fail(e),
+            JobDone::Empty(msg) => self.info("Nothing to save", &msg),
         }
     }
 
@@ -384,15 +481,31 @@ impl Controller {
             UiEvent::ContextMenu { x, y } => self.overlay.menu(self.menu_items(), x, y),
             UiEvent::Menu(id) => self.action(&id),
             UiEvent::ToastButton { id, action } => {
-                if action == "open" {
-                    if let Some(p) = self.toast_paths.remove(&id) {
-                        open(&p);
-                    }
-                }
                 self.overlay.close_toast(id);
+                let prompt = self.prompts.remove(&id);
+                match action.as_str() {
+                    "open" => {
+                        if let Some(p) = self.toast_paths.remove(&id) {
+                            open(&p);
+                        }
+                    }
+                    "record" if self.rec.is_none() => self.start_meeting(prompt),
+                    "save_now" => {
+                        self.auto_stop = None;
+                        if matches!(self.rec, Some(Recording::Meeting { .. })) {
+                            self.toggle_meeting();
+                        }
+                    }
+                    "keep" => {
+                        self.auto_stop = None;
+                        self.meeting_app = None; // the user stops it themselves now
+                    }
+                    _ => {}
+                }
             }
             UiEvent::ToastClosed { id } => {
                 self.toast_paths.remove(&id);
+                self.prompts.remove(&id);
             }
         }
     }
@@ -487,10 +600,6 @@ impl Controller {
 
 // ---- job bodies -----------------------------------------------------------------------------
 
-fn format_dictation(sh: &Shared, raw: &str) -> String {
-    text::smart_format(&sh.pool, &sh.cfg, raw, clipboard::foreground_app().as_deref()).0
-}
-
 fn run_command(sh: &Shared, instruction: &str, selection: Option<&str>) -> Result<String> {
     let cfg = &sh.cfg;
     let model = cfg.llm_model(&cfg.llm.format_model);
@@ -504,7 +613,9 @@ fn run_command(sh: &Shared, instruction: &str, selection: Option<&str>) -> Resul
 fn save_note(sh: &Shared, wave: Vec<f32>, started: DateTime<Local>, duration: f32) -> Result<JobDone> {
     let raw = sh.engine.transcribe(&wave)?;
     let body = notes::clean(&text::apply_dictionary(&raw, &sh.cfg.dictionary), true);
-    anyhow::ensure!(!body.is_empty(), "Didn't catch anything in that voice note");
+    if body.is_empty() {
+        return Ok(JobDone::Empty("No speech was heard in that voice note.".into()));
+    }
     let path = notes::new_note_path(&sh.cfg.notes_dir, "Voice notes", started);
     let mut extra = Vec::new();
     if sh.cfg.keep_wav {
@@ -519,7 +630,9 @@ fn save_note(sh: &Shared, wave: Vec<f32>, started: DateTime<Local>, duration: f3
 fn save_meeting(sh: &Shared, meeting: Meeting, started: DateTime<Local>, with_summary: bool) -> Result<JobDone> {
     let app = meeting.app.clone();
     let done = meeting.finish();
-    anyhow::ensure!(!done.lines.is_empty(), "No speech was recorded in that meeting");
+    if done.lines.is_empty() {
+        return Ok(JobDone::Empty("No speech was recorded in that meeting.".into()));
+    }
     let cfg = &sh.cfg;
     let path = notes::new_note_path(&cfg.notes_dir, "Meetings", started);
     let mut extra = vec![("participants", if done.had_system { "Me, Others" } else { "Me" }.to_string())];

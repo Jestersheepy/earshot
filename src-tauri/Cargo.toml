@@ -29,4 +29,5 @@ anyhow = "1"
 chrono = "0.4"
 parking_lot = "0.13"
 regex = "1"
+rusqlite = { version = "0.37", features = ["bundled"] }
 ureq = { version = "3", features = ["json"] }
