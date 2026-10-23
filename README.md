@@ -2,6 +2,10 @@
 
 <p align="center"><b>A free, open-source Wispr Flow alternative for Windows that runs entirely on your PC.</b></p>
 
+<p align="center"><a href="https://github.com/Jestersheepy/earshot/releases/latest"><img src="https://img.shields.io/github/v/release/Jestersheepy/earshot?label=Download%20for%20Windows&logo=windows&style=for-the-badge&color=14a38b" alt="Download for Windows"></a></p>
+
+<p align="center"><sub>64-bit Windows 11 (Windows 10 should work but is untested). Free, no account. <a href="#install">Install notes</a></sub></p>
+
 <p align="center"><a href="https://ko-fi.com/thedreamingjester"><img src="https://img.shields.io/badge/Ko--fi-grab%20me%20a%20coffee-14a38b?logo=kofi&logoColor=white" alt="Support on Ko-fi"></a></p>
 
 Dictation, voice notes and meeting notes, with the speech recognition and the AI clean-up running on your own CPU. No account, no subscription, no cloud server: your voice never leaves your machine.
