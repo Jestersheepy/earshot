@@ -1,6 +1,6 @@
 [package]
 name = "earshot"
-version = "0.1.1"
+version = "0.2.0"
 description = "Local dictation, voice notes and meeting notes"
 authors = ["Shaun B"]
 edition = "2024"
