@@ -2,7 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, NaiveDate};
+
+use crate::tasks::Task;
 
 pub fn clean(text: &str, drop_fillers: bool) -> String {
     let mut words: Vec<&str> = text.split_whitespace().collect();
@@ -53,6 +55,58 @@ pub fn write_note(
     std::fs::write(path, format!("---\n{front}---\n\n{}\n", body.trim()))
 }
 
+pub const TRIAGE_SYSTEM: &str = "You file voice notes. Reply in JSON with: title (3-6 words on what it is about), type (todo or reminder if it asks for something to be done, idea for an idea, otherwise note), task (for a todo or reminder, the thing to do as a short command, else empty), when (the exact words saying when it's due, like 'by Monday', else empty).";
+
+pub fn triage_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "type": {"enum": ["note", "todo", "idea", "reminder"]},
+            "task": {"type": "string"},
+            "when": {"type": "string"},
+        },
+        "required": ["title", "type", "task", "when"],
+        "additionalProperties": false,
+    })
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Triage {
+    pub title: Option<String>,
+    /// todo, idea or reminder; a plain note has none.
+    pub kind: Option<String>,
+    pub task: Option<Task>,
+}
+
+/// The model's reply, trusting a due date only when its words are in the note.
+pub fn parse_triage(reply: &serde_json::Value, body: &str, owner: &str, today: NaiveDate) -> Triage {
+    let field = |k: &str| reply[k].as_str().map(str::trim).filter(|v| !v.is_empty());
+    let title = field("title")
+        .map(|t| {
+            let t = t.trim_end_matches('.');
+            let t = t.split_once(": ").filter(|(head, _)| head.split_whitespace().count() <= 2).map_or(t, |(_, rest)| rest);
+            t.chars().take(70).collect::<String>()
+        })
+        // "Todo" or "Voice note" says nothing; the note's first words do better
+        .filter(|t| t.split_whitespace().count() <= 10 && !["", "note", "todo", "to-do", "idea", "reminder", "task", "voice note"].contains(&t.to_lowercase().as_str()));
+    let kind = field("type").filter(|k| matches!(*k, "todo" | "idea" | "reminder"));
+    let said = body.to_lowercase();
+    let when = field("when").map(|w| w.to_lowercase()).filter(|w| said.contains(w.trim_start_matches("by ").trim()));
+    let task = match (kind, field("task")) {
+        (Some("todo" | "reminder"), Some(t)) => Some(Task {
+            done: false,
+            owner: Some(owner.to_string()),
+            text: t.trim_end_matches('.').to_string(),
+            // "after work" names no day, but the task itself may ("…tomorrow after work")
+            due: when.and_then(|w| crate::when::due(&w, today)).or_else(|| crate::when::due(t, today)).map(|d| d.to_string()),
+            t: None,
+        }),
+        _ => None,
+    };
+    Triage { title, kind: kind.map(String::from), task }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -61,5 +115,28 @@ mod tests {
     fn cleans_fillers() {
         assert_eq!(clean("um so uh we ship, um, friday", true), "So we ship, friday");
         assert_eq!(fmt_duration(3725.0), "1:02:05");
+    }
+
+    #[test]
+    fn reads_triage() {
+        let today = NaiveDate::from_ymd_opt(2026, 10, 23).unwrap();
+        let body = "I need to call the plumber about the leak, ideally by Monday.";
+        let reply = serde_json::json!({"title": "Reminder: Call Plumber", "type": "reminder", "task": "Call the plumber about the leak", "when": "by Monday"});
+        let t = parse_triage(&reply, body, "Me", today);
+        assert_eq!(t.title.as_deref(), Some("Call Plumber"));
+        assert_eq!(t.kind.as_deref(), Some("reminder"));
+        let task = t.task.unwrap();
+        assert_eq!((task.due.as_deref(), task.owner.as_deref()), (Some("2026-10-26"), Some("Me")));
+        // a time the note never mentions is dropped
+        let reply = serde_json::json!({"title": "Groceries", "type": "todo", "task": "Buy milk", "when": "by end of day tomorrow"});
+        assert_eq!(parse_triage(&reply, "Buy milk on the way home", "Me", today).task.unwrap().due, None);
+        let reply = serde_json::json!({"title": "Lisbon in spring", "type": "idea", "task": "Book a trip", "when": ""});
+        let idea = parse_triage(&reply, "Lisbon was lovely", "Me", today);
+        assert_eq!((idea.kind.as_deref(), idea.task), (Some("idea"), None));
+        assert_eq!(parse_triage(&serde_json::json!({}), "x", "Me", today), Triage { title: None, kind: None, task: None });
+        let body = "Pick up the dry cleaning tomorrow after work.";
+        let reply = serde_json::json!({"title": "Todo", "type": "todo", "task": "Pick up dry cleaning tomorrow after work", "when": "after work"});
+        let t = parse_triage(&reply, body, "Me", today);
+        assert_eq!((t.title, t.task.unwrap().due.as_deref()), (None, Some("2026-10-24")));
     }
 }

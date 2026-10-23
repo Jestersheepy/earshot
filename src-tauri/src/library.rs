@@ -9,7 +9,8 @@ use regex::Regex;
 use serde::Serialize;
 use std::sync::LazyLock;
 
-use crate::summary::Mode;
+use crate::summary::{Chapter, Mode};
+use crate::tasks::Task;
 
 static LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\*\*\[(\d+):(\d+)(?::(\d+))?\] ([^:*]+):\*\* ?(.*)$").unwrap());
 
@@ -25,6 +26,12 @@ pub struct NoteMeta {
     pub audio: Option<String>,
     pub preview: String,
     pub words: usize,
+    /// One sentence on the outcome, written with the summary.
+    pub gist: Option<String>,
+    /// For voice notes: note, todo, idea or reminder.
+    pub tags: Vec<String>,
+    pub participants: Vec<String>,
+    pub open_tasks: usize,
 }
 
 #[derive(Serialize)]
@@ -43,6 +50,8 @@ pub struct NoteDetail {
     pub body: String,
     /// Speakers named from voice memory that you haven't confirmed in this note.
     pub unconfirmed: Vec<String>,
+    pub tasks: Vec<Task>,
+    pub chapters: Vec<Chapter>,
 }
 
 #[derive(Serialize)]
@@ -58,7 +67,11 @@ struct Parsed {
     summary: Option<String>,
     lines: Vec<TranscriptLine>,
     body: String,
+    tasks: Vec<Task>,
+    chapters: Vec<Chapter>,
 }
+
+static CHAPTER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^- \[(\d+):(\d+)(?::(\d+))?\] (.+)$").unwrap());
 
 fn parse(text: &str) -> Parsed {
     let text = text.replace("\r\n", "\n");
@@ -73,6 +86,7 @@ fn parse(text: &str) -> Parsed {
     let mut mode = Mode::Standard;
     let mut lines = Vec::new();
     let mut body = Vec::new();
+    let (mut tasks, mut chapters) = (Vec::new(), Vec::new());
     let mut section = "";
     for l in rest.lines() {
         if l.starts_with("# ") {
@@ -86,6 +100,8 @@ fn parse(text: &str) -> Parsed {
                     "summary"
                 }
                 (None, "transcript") => "transcript",
+                (None, "action items") => "tasks",
+                (None, "chapters") => "chapters",
                 _ => "body",
             };
             continue;
@@ -103,6 +119,14 @@ fn parse(text: &str) -> Parsed {
                 s.push('\n');
             }
             "transcript" => {}
+            "tasks" => tasks.extend(Task::parse(l)),
+            "chapters" => {
+                if let Some(c) = CHAPTER.captures(l) {
+                    let n = |i: usize| c.get(i).map_or(0, |m| m.as_str().parse::<u32>().unwrap_or(0));
+                    let t = if c.get(3).is_some() { n(1) * 3600 + n(2) * 60 + n(3) } else { n(1) * 60 + n(2) };
+                    chapters.push(Chapter { t, title: c[4].trim().to_string() });
+                }
+            }
             _ => body.push(l),
         }
     }
@@ -112,7 +136,7 @@ fn parse(text: &str) -> Parsed {
         .filter(|(_, s)| !s.is_empty() && !s.starts_with("_Too short"))
         .collect();
     let summary = ["standard", "concise", "nuanced"].iter().find_map(|k| summaries.get(*k).cloned());
-    Parsed { front, summaries, summary, lines, body: body.join("\n").trim().to_string() }
+    Parsed { front, summaries, summary, lines, body: body.join("\n").trim().to_string(), tasks, chapters }
 }
 
 fn get<'a>(front: &'a [(String, String)], key: &str) -> Option<&'a str> {
@@ -135,7 +159,9 @@ fn meta(path: &Path, p: &Parsed) -> NoteMeta {
         .map(String::from)
         .unwrap_or_else(|| if folder.contains("meeting") { "meeting".into() } else { "voice-note".into() });
     let app = get(&p.front, "app").map(String::from);
-    let text_for_preview = if kind == "meeting" {
+    let text_for_preview = if let Some(g) = get(&p.front, "gist") {
+        g.to_string()
+    } else if kind == "meeting" {
         p.summary.clone().unwrap_or_else(|| p.lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join(" "))
     } else {
         p.body.clone()
@@ -169,6 +195,10 @@ fn meta(path: &Path, p: &Parsed) -> NoteMeta {
         audio,
         preview: first_words(&preview_src, 40),
         words,
+        gist: get(&p.front, "gist").map(String::from),
+        tags: list_field(get(&p.front, "tags")),
+        participants: list_field(get(&p.front, "participants")),
+        open_tasks: p.tasks.iter().filter(|t| !t.done).count(),
     }
 }
 
@@ -199,6 +229,10 @@ fn load(dir: &Path) -> Vec<(NoteMeta, String)> {
         .collect();
     notes.sort_by(|a, b| b.0.date.cmp(&a.0.date));
     notes
+}
+
+fn list_field(v: Option<&str>) -> Vec<String> {
+    v.map_or(Vec::new(), |t| t.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
 }
 
 pub fn list(dir: &Path) -> Vec<NoteMeta> {
@@ -245,7 +279,7 @@ pub fn detail(path: &Path) -> Result<NoteDetail> {
     let p = parse(&text);
     let meta = meta(path, &p);
     let unconfirmed = get(&p.front, "unconfirmed").map_or(Vec::new(), |u| u.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect());
-    Ok(NoteDetail { meta, summaries: p.summaries, lines: p.lines, body: p.body, unconfirmed })
+    Ok(NoteDetail { meta, summaries: p.summaries, lines: p.lines, body: p.body, unconfirmed, tasks: p.tasks, chapters: p.chapters })
 }
 
 /// Set (or add) a front-matter key, keeping everything else byte for byte.
@@ -288,6 +322,87 @@ fn with_summary(text: &str, mode: Mode, summary: &str) -> Result<String> {
     })
 }
 
+/// Replace a "## heading" section, or add it before the transcript (at the end for notes without one).
+pub fn set_section(path: &Path, heading: &str, content: &str) -> Result<()> {
+    let text = std::fs::read_to_string(path)?.replace("\r\n", "\n");
+    std::fs::write(path, with_section(&text, heading, content))?;
+    Ok(())
+}
+
+fn with_section(text: &str, heading: &str, content: &str) -> String {
+    let h = format!("\n## {heading}\n");
+    match text.find(&h) {
+        Some(a) => {
+            let start = a + h.len();
+            let end = text[start..].find("\n## ").map_or(text.len(), |i| start + i);
+            let tail = &text[end..];
+            format!("{}{h}\n{}\n{}", &text[..a], content.trim(), if tail.is_empty() { "" } else { tail })
+        }
+        None => match text.find("\n## Transcript\n") {
+            Some(t) => format!("{}{h}\n{}\n{}", &text[..t], content.trim(), &text[t..]),
+            None => format!("{}\n{h}\n{}\n", text.trim_end(), content.trim()),
+        },
+    }
+}
+
+/// The title, gist, action items and chapters written alongside a summary. Action items are written even when
+/// there are none, so re-summarizing knows they've been looked for.
+pub fn save_extras(path: &Path, w: &crate::summary::Written) -> Result<()> {
+    if let Some(t) = &w.title {
+        set_front(path, "title", t)?;
+    }
+    if let Some(g) = &w.gist {
+        set_front(path, "gist", g)?;
+    }
+    if let Some(tasks) = &w.tasks {
+        let md = if tasks.is_empty() { "None mentioned.".to_string() } else { crate::tasks::to_md(tasks) };
+        set_section(path, crate::tasks::HEADING, &md)?;
+    }
+    if !w.chapters.is_empty() {
+        let md = w.chapters.iter().map(|c| format!("- [{:02}:{:02}] {}", c.t / 60, c.t % 60, c.title)).collect::<Vec<_>>().join("\n");
+        set_section(path, "Chapters", &md)?;
+    }
+    Ok(())
+}
+
+/// What a note still lacks that a summary pass can add: notes from before titles, chapters and action items.
+pub fn missing_extras(path: &Path) -> Result<crate::summary::Want> {
+    let text = std::fs::read_to_string(path)?.replace("\r\n", "\n");
+    let p = parse(&text);
+    Ok(crate::summary::Want {
+        title: get(&p.front, "title").is_none(),
+        chapters: !text.contains("\n## Chapters\n"),
+        tasks: !text.contains(&format!("\n## {}\n", crate::tasks::HEADING)),
+    })
+}
+
+/// Tick or untick the `index`th action item.
+pub fn set_task_done(path: &Path, index: usize, done: bool) -> Result<()> {
+    let p = parse(&std::fs::read_to_string(path)?);
+    let mut tasks = p.tasks;
+    let Some(t) = tasks.get_mut(index) else { bail!("no such task") };
+    t.done = done;
+    set_section(path, crate::tasks::HEADING, &crate::tasks::to_md(&tasks))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskRow {
+    pub note: NoteMeta,
+    pub index: usize,
+    pub task: Task,
+}
+
+/// Every action item in every note, newest note first.
+pub fn all_tasks(dir: &Path) -> Vec<TaskRow> {
+    load(dir)
+        .into_iter()
+        .flat_map(|(meta, text)| {
+            parse(&text).tasks.into_iter().enumerate().map(move |(index, task)| TaskRow { note: meta.clone(), index, task })
+        })
+        .collect()
+}
+
 /// Transcript lines as segment Lines, for re-summarizing.
 pub fn transcript(path: &Path) -> Result<Vec<earshot_core::segment::Line>> {
     let p = parse(&std::fs::read_to_string(path)?);
@@ -318,6 +433,19 @@ mod tests {
         assert_eq!(p.summaries["concise"], "### TL;DR\n- Shipped.");
         assert_eq!(p.summaries["standard"], "### Summary\nShipped it, twice.");
         assert_eq!(p.lines.len(), 2);
+        let md = with_section(&md, "Action items", "- [ ] **Sarah** — Send it to legal (due 2026-10-24) [00:36]");
+        let md = with_section(&md, "Chapters", "- [00:00] Onboarding\n- [01:05] Pricing");
+        let md = with_section(&md, "Action items", "- [x] **Sarah** — Send it to legal (due 2026-10-24) [00:36]");
+        let p = parse(&md);
+        assert_eq!(p.tasks.len(), 1);
+        assert!(p.tasks[0].done);
+        assert_eq!(p.chapters[1], Chapter { t: 65, title: "Pricing".into() });
+        assert_eq!(p.lines.len(), 2);
+        assert_eq!(p.summaries.len(), 2);
+        assert!(md.find("## Chapters").unwrap() < md.find("## Transcript").unwrap());
+        let v = with_section("---\ntype: voice-note\n---\n\nCall the bank.\n", "Action items", "- [ ] Call the bank");
+        assert_eq!(parse(&v).body, "Call the bank.");
+        assert_eq!(parse(&v).tasks.len(), 1);
         let v = parse("---\ntype: voice-note\naudio: [[a.wav]]\n---\n\nSo anyone could be talking right now, and it should pick up.");
         assert_eq!(meta(Path::new("C:/n/Voice notes/a.md"), &v).title, "So anyone could be talking right now, and…");
     }

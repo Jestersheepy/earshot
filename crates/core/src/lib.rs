@@ -2,6 +2,7 @@
 
 pub mod audio;
 pub mod clipboard;
+pub mod embed;
 pub mod hotkeys;
 pub mod logfile;
 pub mod micwatch;

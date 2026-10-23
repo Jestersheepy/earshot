@@ -80,7 +80,7 @@
     <div class="card">
       {#if status.needed > 0}
         <div class="row">
-          <div class="label"><div>Speech and formatting</div><div class="hint">Dictation, voice notes, telling voices apart.</div></div>
+          <div class="label"><div>Speech and formatting</div><div class="hint">Dictation, voice notes, telling voices apart, search.</div></div>
           <span class="size">{size(status.needed)}</span>
         </div>
       {/if}

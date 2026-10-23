@@ -7,10 +7,13 @@ pub mod library;
 pub mod llm;
 mod meeting;
 mod notes;
+mod search;
 mod setup;
 mod speakers;
 pub mod summary;
+pub mod tasks;
 pub mod text;
+mod when;
 mod window;
 
 use std::sync::Arc;
@@ -39,6 +42,7 @@ pub(crate) fn bindings(cfg: &Config) -> anyhow::Result<Bindings> {
         ("meeting", &hk.meeting),
         ("paste_last", &hk.paste_last),
         ("toggle_pill", &hk.toggle_pill),
+        ("search", &hk.search),
     ] {
         toggles.push((name.to_string(), Combo::parse(combo)?));
     }
@@ -123,10 +127,16 @@ pub fn run() {
             commands::panel_minimize,
             commands::list_notes,
             commands::search_notes,
+            commands::smart_search,
+            commands::listen_start,
+            commands::listen_stop,
             commands::get_note,
             commands::rename_note,
             commands::delete_note,
             commands::resummarize,
+            commands::list_tasks,
+            commands::set_task,
+            commands::task_to_calendar,
             commands::reveal,
             commands::open_notes_folder,
             commands::list_history,
@@ -171,7 +181,19 @@ pub fn run() {
             earshot_core::micwatch::watch(mic, Duration::from_secs(3), Duration::from_secs(5));
             tray(app, tx.clone())?;
             let history = history::History::open().map(Arc::new).map_err(|e| eprintln!("history: {e:#}")).ok();
-            app.manage(commands::AppState { pool: pool.clone(), history: history.clone(), tx: tx.clone() });
+            let search = std::env::var_os("APPDATA")
+                .map(|d| std::path::PathBuf::from(d).join("Earshot").join("search.db"))
+                .and_then(|db| {
+                    search::Searcher::new(cfg.embed_dir(), &db, cfg.stt_threads.min(4)).map_err(|e| eprintln!("search index: {e:#}")).ok()
+                });
+            app.manage(commands::AppState {
+                pool: pool.clone(),
+                history: history.clone(),
+                tx: tx.clone(),
+                search,
+                engine: engine.clone(),
+                listening: Default::default(),
+            });
             let _ = app.asset_protocol_scope().allow_directory(&cfg.notes_dir, true);
             let ctl = Controller::new(cfg, engine, pool, history, tx.clone(), overlay, app.handle().clone());
             std::thread::spawn(move || ctl.run(rx));

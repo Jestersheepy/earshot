@@ -16,6 +16,8 @@ pub struct Hotkeys {
     pub meeting: String,
     pub paste_last: String,
     pub toggle_pill: String,
+    /// Opens the panel and listens for a spoken search.
+    pub search: String,
 }
 
 impl Default for Hotkeys {
@@ -27,6 +29,7 @@ impl Default for Hotkeys {
             meeting: "ctrl+alt+m".into(),
             paste_last: "alt+shift+v".into(),
             toggle_pill: "ctrl+alt+space".into(),
+            search: "ctrl+alt+f".into(),
         }
     }
 }
@@ -229,6 +232,10 @@ impl Config {
 
     pub fn speaker_dir(&self) -> PathBuf {
         self.models_dir().join("speaker")
+    }
+
+    pub fn embed_dir(&self) -> PathBuf {
+        self.models_dir().join("embed")
     }
 
     pub fn llm_model(&self, name: &str) -> PathBuf {

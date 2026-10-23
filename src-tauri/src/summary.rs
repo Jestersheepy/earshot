@@ -1,11 +1,15 @@
 //! Meeting summaries at three depths. Transcripts too long for one prompt are first condensed part by part
 //! into notes that keep every detail; each mode then works from those.
 
+use std::sync::LazyLock;
+
 use anyhow::Result;
 use earshot_core::segment::Line;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use crate::backend::Summarizer;
+use crate::tasks::{self, Task};
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -50,21 +54,30 @@ transcript; never invent names, dates, numbers or tasks.";
 const CONDENSE: &str = "Write detailed notes on this part of a meeting transcript. Keep every topic, decision, number, date, \
 name, commitment and open question, each with its [mm:ss] time and who said it. Do not drop details.";
 
+// Action items aren't part of the summaries: they're extracted once into the note's checklist (see tasks.rs).
 const CONCISE: &str = "Summarize this meeting for someone with 20 seconds to spare. Use the heading '### TL;DR' with at most 3 \
-short bullets on the outcomes, then '### Action items' with one bullet per task as '- **Owner** — task'. Stay under 120 words. \
-If there are no action items, write 'None mentioned.' under that heading.";
+short bullets on the outcomes. Stay under 80 words.";
 
 const EXTRACT: &str = "List every action item in this meeting: tasks, commitments (\"I'll look into it\"), requests, follow-ups \
-and deadlines, including implicit ones. One per line as '- [mm:ss] Owner: task (due: date if stated)'. The owner is whoever \
-will do it; if unclear, write 'Unassigned'. List nothing else. If there are none, write 'None.'";
+and deadlines, including implicit ones. One per line as '- [mm:ss] Owner: task (due: YYYY-MM-DD)'. Give a due date only when \
+a day is stated or clearly implied, worked out from the meeting date in the header ('Friday' is the first Friday after it); \
+otherwise leave out the '(due: …)' part. The owner is whoever will do it; if unclear, write 'Unassigned'. List nothing else. \
+If there are none, write 'None.'";
+
+const TITLE: &str = "Name this meeting and sum it up. Reply with exactly two lines:\n\
+Title: 3-7 words on what it was about, like 'Pricing tiers and the launch date' (no date, app or quotes)\n\
+Gist: one sentence under 25 words on the outcome.";
+
+const CHAPTERS: &str = "Split this meeting into its topics, in order: 2 to 8 chapters, fewer for a short meeting. One per \
+line as '[mm:ss] Topic', where the time is when the topic starts and the topic is 2-6 words. List nothing else.";
 
 const STANDARD: &str = "Write meeting notes that give someone who missed the meeting every detail they need. Use these \
 headings in this order:\n\
 '### Summary': 2-4 sentences on the purpose and the outcomes.\n\
 '### Key points': bullets grouped by topic (bold the topic first), keeping specifics: numbers, dates, names, options considered.\n\
 '### Decisions': what was agreed.\n\
-'### Action items': every item from the list after the transcript, as '- **Owner** — task (due date if stated)'. Do not drop any.\n\
 '### Open questions': what was left unresolved.\n\
+Don't list action items; they're kept separately.\n\
 If a section has nothing, write 'None mentioned.'";
 
 const BETWEEN: &str = "Read between the lines of this meeting. Under the heading '### Between the lines', write 3-6 bullets on \
@@ -87,23 +100,85 @@ pub fn transcript_text(lines: &[Line]) -> Vec<String> {
         .collect()
 }
 
-pub fn summarize(by: &Summarizer, lines: &[Line], head: &str, mode: Mode) -> Result<String> {
+/// What a note needs besides the summary. Each is a short extra pass while the model is loaded anyway.
+#[derive(Clone, Copy, Default)]
+pub struct Want {
+    pub title: bool,
+    pub chapters: bool,
+    pub tasks: bool,
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct Chapter {
+    pub t: u32,
+    pub title: String,
+}
+
+#[derive(Default)]
+pub struct Written {
+    pub summary: String,
+    pub title: Option<String>,
+    pub gist: Option<String>,
+    pub chapters: Vec<Chapter>,
+    pub tasks: Option<Vec<Task>>,
+}
+
+/// Meetings shorter than this get no chapters: one topic isn't worth a list.
+const CHAPTERS_MIN_S: f32 = 180.0;
+
+pub fn summarize(by: &Summarizer, lines: &[Line], head: &str, mode: Mode, want: Want) -> Result<Written> {
     let ask = |task: &str, material: &str, max_tokens: u32, temperature: f32| {
         let user = format!("{task}\n\n{head}\n----------\n{material}");
         by.chat(SYSTEM, &user, max_tokens, temperature).map(|s| tidy(&s))
     };
     let source = source(lines, by.ctx(), |part| ask(CONDENSE, part, 1024, 0.2))?;
-    if mode == Mode::Concise {
-        return ask(CONCISE, &source, 400, 0.3);
+    let actions = if want.tasks || mode == Mode::Nuanced { Some(ask(EXTRACT, &source, 768, 0.1)?) } else { None };
+    let summary = match mode {
+        Mode::Concise => ask(CONCISE, &source, 300, 0.3)?,
+        Mode::Standard => ask(STANDARD, &source, 1600, 0.3)?,
+        Mode::Nuanced => {
+            let notes = ask(STANDARD, &source, 1600, 0.3)?;
+            let between = with_heading(ask(BETWEEN, &source, 700, 0.5)?, "### Between the lines");
+            let agreed = actions.as_deref().unwrap_or_default();
+            let suggested = ask(SUGGEST, &format!("{between}\n\nAgreed action items:\n{agreed}"), 500, 0.4)?;
+            format!("{notes}\n\n{between}\n\n{}", with_heading(suggested, "### Suggested actions"))
+        }
+    };
+    // the extras never cost the summary: if one fails, the note just goes without it
+    let (title, gist) = if want.title { ask(TITLE, &source, 100, 0.2).map(|s| title_and_gist(&s)).unwrap_or_default() } else { (None, None) };
+    let length = lines.last().map_or(0.0, |l| l.end.max(l.start));
+    let chapters = if want.chapters && length >= CHAPTERS_MIN_S {
+        ask(CHAPTERS, &source, 300, 0.2).map(|s| chapters(&s, length as u32)).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    Ok(Written { summary, title, gist, chapters, tasks: if want.tasks { actions.as_deref().map(tasks::from_extracted) } else { None } })
+}
+
+fn title_and_gist(s: &str) -> (Option<String>, Option<String>) {
+    let field = |key: &str| {
+        s.lines()
+            .find_map(|l| l.trim().trim_start_matches(['*', '#', ' ']).strip_prefix(key))
+            .map(|v| v.trim_start_matches(['*', ':', ' ']).trim().trim_matches(['"', '\'', '*']).trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    let title = field("Title").map(|t| t.trim_end_matches('.').chars().take(80).collect());
+    (title, field("Gist").map(|g| g.chars().take(240).collect()))
+}
+
+/// "[mm:ss] Topic" lines, in order and within the meeting; fewer than two is no use.
+fn chapters(s: &str, length: u32) -> Vec<Chapter> {
+    static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[(\d+):(\d{2})(?::(\d{2}))?\]\s*[-–—:]?\s*(.+)").unwrap());
+    let mut out: Vec<Chapter> = Vec::new();
+    for c in s.lines().filter_map(|l| RE.captures(l)) {
+        let n = |i: usize| c.get(i).map_or(0, |m| m.as_str().parse::<u32>().unwrap_or(0));
+        let t = if c.get(3).is_some() { n(1) * 3600 + n(2) * 60 + n(3) } else { n(1) * 60 + n(2) };
+        let title = c[4].trim().trim_matches(['*', '"']).trim().to_string();
+        if t <= length && out.last().is_none_or(|p| t > p.t) && !title.is_empty() {
+            out.push(Chapter { t, title });
+        }
     }
-    let actions = ask(EXTRACT, &source, 768, 0.1)?;
-    let notes = ask(STANDARD, &format!("{source}\n----------\nAction items found in the transcript:\n{actions}"), 1600, 0.3)?;
-    if mode == Mode::Standard {
-        return Ok(notes);
-    }
-    let between = with_heading(ask(BETWEEN, &source, 700, 0.5)?, "### Between the lines");
-    let suggested = ask(SUGGEST, &format!("{between}\n\nAgreed action items:\n{actions}"), 500, 0.4)?;
-    Ok(format!("{notes}\n\n{between}\n\n{}", with_heading(suggested, "### Suggested actions")))
+    if out.len() < 2 { Vec::new() } else { out }
 }
 
 /// The transcript itself when it fits, else detailed notes on each part in order.
@@ -158,5 +233,15 @@ mod tests {
         assert_eq!(tidy("Sure! Here are the notes:\n\n### Summary\nShipped."), "### Summary\nShipped.");
         assert_eq!(tidy("```markdown\n### TL;DR\n- ok\n```"), "### TL;DR\n- ok");
         assert_eq!(tidy("- [00:10] Tom: send deck"), "- [00:10] Tom: send deck");
+    }
+
+    #[test]
+    fn reads_title_and_chapters() {
+        let (t, g) = title_and_gist("Title: \"Pricing tiers and the launch date.\"\n**Gist:** Two tiers, launch on 4 November.");
+        assert_eq!(t.as_deref(), Some("Pricing tiers and the launch date"));
+        assert_eq!(g.as_deref(), Some("Two tiers, launch on 4 November."));
+        let c = chapters("[00:00] Onboarding results\n- [00:36] — Pricing\n[00:30] Out of order\n[09:00] Too late", 300);
+        assert_eq!(c, vec![Chapter { t: 0, title: "Onboarding results".into() }, Chapter { t: 36, title: "Pricing".into() }]);
+        assert!(chapters("[00:00] Just one", 300).is_empty());
     }
 }

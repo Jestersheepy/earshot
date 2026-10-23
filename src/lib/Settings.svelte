@@ -75,6 +75,7 @@
     { key: "meeting", label: "Meeting", hint: "Records your mic and the call’s audio." },
     { key: "paste_last", label: "Paste last", hint: "Pastes your most recent dictation again." },
     { key: "toggle_pill", label: "Show / hide pill", hint: "The floating indicator." },
+    { key: "search", label: "Search by voice", hint: "Opens your notes and listens. Press again to search." },
   ];
 
   async function load() {

@@ -102,13 +102,29 @@ impl Pool {
 
     /// Full message list, e.g. few-shot user/assistant pairs before the real request.
     pub fn chat_messages(&self, model: &Path, ctx: u32, messages: Vec<Value>, max_tokens: u32, temperature: f32) -> Result<String> {
-        let port = self.port(model, ctx)?;
         let body = json!({
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
             "cache_prompt": true,
         });
+        self.complete(model, ctx, body)
+    }
+
+    /// A reply held to a JSON schema by llama.cpp's grammar, so even a small model keeps to the shape.
+    pub fn chat_json(&self, model: &Path, ctx: u32, system: &str, user: &str, schema: Value, max_tokens: u32) -> Result<Value> {
+        let body = json!({
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "temperature": 0.0,
+            "max_tokens": max_tokens,
+            "cache_prompt": true,
+            "json_schema": schema,
+        });
+        Ok(serde_json::from_str(&self.complete(model, ctx, body)?)?)
+    }
+
+    fn complete(&self, model: &Path, ctx: u32, body: Value) -> Result<String> {
+        let port = self.port(model, ctx)?;
         let mut resp = ureq::post(&format!("http://127.0.0.1:{port}/v1/chat/completions"))
             .config()
             .timeout_global(Some(Duration::from_secs(1800)))

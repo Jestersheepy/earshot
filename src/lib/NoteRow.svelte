@@ -1,21 +1,28 @@
 <script lang="ts">
   import { timeOf, appName, type NoteMeta } from "$lib/api";
 
-  let { meta, snippet = "", selected = false, onclick }: { meta: NoteMeta; snippet?: string; selected?: boolean; onclick: () => void } =
-    $props();
+  let {
+    meta,
+    snippet = "",
+    when = "",
+    selected = false,
+    onclick,
+  }: { meta: NoteMeta; snippet?: string; when?: string; selected?: boolean; onclick: () => void } = $props();
 </script>
 
 <button class="row" class:selected {onclick}>
   <div class="top">
     <span class="kind-dot" class:meeting={meta.kind === "meeting"}></span>
     <span class="title">{meta.title}</span>
-    <span class="time">{timeOf(meta.date)}</span>
+    <span class="time">{when || timeOf(meta.date)}</span>
   </div>
   {#if snippet || meta.preview}<div class="preview">{snippet || meta.preview}</div>{/if}
   <div class="tags">
     {#if meta.duration}<span>{meta.duration}</span>{/if}
     {#if meta.app}<span>{appName(meta.app)}</span>{/if}
     {#if meta.words}<span>{meta.words} words</span>{/if}
+    {#each meta.tags as tag}<span>{tag}</span>{/each}
+    {#if meta.openTasks}<span>{meta.openTasks} open {meta.openTasks === 1 ? "task" : "tasks"}</span>{/if}
   </div>
 </button>
 

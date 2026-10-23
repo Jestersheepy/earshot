@@ -1,15 +1,16 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api, audioUrl, clock, longDate, appName, speakerColor, initials, type NoteDetail, type SummaryMode } from "$lib/api";
+  import { api, audioUrl, clock, longDate, dueDate, appName, speakerColor, initials, type NoteDetail, type SummaryMode, type Task } from "$lib/api";
   import { markdown } from "$lib/md";
   import Icon from "$lib/Icon.svelte";
 
   let {
     path,
+    at = null,
     compact = false,
     onchange,
     ondelete,
-  }: { path: string; compact?: boolean; onchange: () => void; ondelete: () => void } = $props();
+  }: { path: string; at?: number | null; compact?: boolean; onchange: () => void; ondelete: () => void } = $props();
 
   let note = $state<NoteDetail | null>(null);
   let error = $state("");
@@ -54,6 +55,7 @@
       note = await api.getNote(path);
       title = note.meta.title;
       if (!note.summaries[mode]) mode = MODES.find((m) => note!.summaries[m]) ?? mode;
+      if (at != null) requestAnimationFrame(() => jump(at!, false));
     } catch (e) {
       error = String(e);
     }
@@ -127,10 +129,46 @@
     }
   }
 
+  async function tick(i: number, done: boolean) {
+    if (!note) return;
+    note.tasks[i].done = done;
+    try {
+      await api.setTask(path, i, done);
+      onchange();
+    } catch (e) {
+      error = String(e);
+      await load();
+    }
+  }
+
+  async function toCalendar(i: number) {
+    try {
+      await api.taskToCalendar(path, i);
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  let article = $state<HTMLElement>();
+  function jump(t: number, play = true) {
+    if (note?.meta.audio && audio) {
+      if (play) seek(t);
+      else audio.currentTime = now = t;
+    }
+    const i = note?.lines.findIndex((l) => l.t >= t) ?? -1;
+    article?.querySelector(`[data-line="${i}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  const taskMd = (t: Task) =>
+    `- [${t.done ? "x" : " "}] ${t.owner ? `**${t.owner}** — ` : ""}${t.text}${t.due ? ` (due ${t.due})` : ""}`;
+
   function asMarkdown() {
     if (!note) return "";
     const parts = [`# ${note.meta.title}`, longDate(note.meta.date)];
+    if (note.meta.gist) parts.push(`> ${note.meta.gist}`);
     if (note.summaries[mode]) parts.push(note.summaries[mode]!);
+    if (note.tasks.length) parts.push(`### Action items\n${note.tasks.map(taskMd).join("\n")}`);
+    if (note.chapters.length) parts.push(`### Chapters\n${note.chapters.map((c) => `- [${clock(c.t)}] ${c.title}`).join("\n")}`);
     if (note.lines.length) parts.push(note.lines.map((l) => `**[${clock(l.t)}] ${l.speaker}:** ${l.text}`).join("\n\n"));
     if (note.body) parts.push(note.body);
     return parts.join("\n\n");
@@ -162,7 +200,7 @@
 {#if error && !note}
   <div class="empty"><strong>Couldn’t open this note</strong><span>{error}</span></div>
 {:else if note}
-  <article class:compact>
+  <article class:compact bind:this={article}>
     <header>
       <div class="kicker">
         <span class="kind-dot" class:meeting={isMeeting}></span>
@@ -204,6 +242,7 @@
           </button>
         </span>
       </div>
+      {#if note.meta.gist}<p class="gist selectable">{note.meta.gist}</p>{/if}
     </header>
 
     {#if error}<div class="error">{error}</div>{/if}
@@ -312,9 +351,9 @@
           <div class="gen">
             <p class="faint">
               {mode === "concise"
-                ? "A TL;DR and the action items."
+                ? "A TL;DR in three bullets."
                 : mode === "standard"
-                  ? "Key points, decisions, every action item and open questions."
+                  ? "Key points, decisions and open questions."
                   : "Standard, plus what was left unsaid and suggested next steps."}
             </p>
             <button class="btn primary" onclick={summarize}><Icon name="sparkle" size={13} />Generate</button>
@@ -323,12 +362,51 @@
       </section>
     {/if}
 
+    {#if note.tasks.length}
+      <section class="card tasks">
+        <div class="card-head">
+          <h3><Icon name="tasks" size={13} />Action items</h3>
+          <span class="faint small">{note.tasks.filter((t) => !t.done).length} open</span>
+        </div>
+        <ul>
+          {#each note.tasks as task, i (i)}
+            <li class:done={task.done}>
+              <input type="checkbox" checked={task.done} onchange={(e) => tick(i, e.currentTarget.checked)} />
+              <div class="task selectable">
+                {#if task.owner}<strong style:color={color(task.owner)}>{task.owner}</strong>{/if}
+                <span>{task.text}</span>
+                <span class="task-meta">
+                  {#if task.due}
+                    <button class="chip" onclick={() => toCalendar(i)} title="Add to calendar"><Icon name="calendar" size={12} />{dueDate(task.due)}</button>
+                  {/if}
+                  {#if task.t != null && note.lines.length}
+                    <button class="chip" onclick={() => jump(task.t!)} title="Where it was said">{clock(task.t)}</button>
+                  {/if}
+                </span>
+              </div>
+            </li>
+          {/each}
+        </ul>
+      </section>
+    {/if}
+
+    {#if note.chapters.length}
+      <section class="chapters">
+        <h3><Icon name="chapters" size={13} />Chapters</h3>
+        <ol>
+          {#each note.chapters as ch}
+            <li><button onclick={() => jump(ch.t)}><span class="t">{clock(ch.t)}</span>{ch.title}</button></li>
+          {/each}
+        </ol>
+      </section>
+    {/if}
+
     {#if note.lines.length}
       <section class="transcript selectable">
         <h3>Transcript</h3>
         {#each note.lines as line, i (i)}
           {@const first = i === 0 || note.lines[i - 1].speaker !== line.speaker}
-          <div class="line" class:active={i === active} class:cont={!first}>
+          <div class="line" class:active={i === active} class:cont={!first} data-line={i}>
             <button class="t" onclick={() => seek(line.t)} disabled={!note.meta.audio}>{clock(line.t)}</button>
             <div>
               {#if first}
@@ -696,6 +774,90 @@
     to {
       background-position: -200% 0;
     }
+  }
+
+  .gist {
+    margin: 8px 0 0;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+
+  /* action items */
+  .tasks ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .tasks li {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    padding: 5px 0;
+  }
+  .tasks li + li {
+    border-top: 1px solid var(--border);
+  }
+  .tasks input {
+    margin-top: 4px;
+    accent-color: var(--accent);
+  }
+  .task {
+    line-height: 1.5;
+  }
+  .task strong {
+    font-weight: 600;
+    margin-right: 6px;
+  }
+  .tasks li.done .task > span:not(.task-meta) {
+    color: var(--faint);
+    text-decoration: line-through;
+  }
+  .task-meta {
+    display: inline-flex;
+    gap: 4px;
+    margin-left: 6px;
+    vertical-align: 1px;
+  }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    border: 1px solid var(--border);
+    background: transparent;
+    border-radius: 999px;
+    padding: 0 7px;
+    font-size: 11.5px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .chip:hover {
+    color: var(--accent-text);
+    border-color: var(--accent);
+  }
+
+  /* chapters */
+  .chapters {
+    margin-bottom: 24px;
+  }
+  .chapters h3 {
+    margin-bottom: 6px;
+  }
+  .chapters ol {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .chapters button {
+    all: unset;
+    cursor: pointer;
+    display: grid;
+    grid-template-columns: 44px 1fr;
+    gap: 6px;
+    width: 100%;
+    padding: 3px 0;
+  }
+  .chapters button:hover {
+    color: var(--accent-text);
   }
 
   /* transcript */

@@ -1,16 +1,17 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { listen } from "@tauri-apps/api/event";
-  import { api, applyLook, dayLabel, type NoteMeta, type PanelMode, type SearchHit } from "$lib/api";
+  import { api, applyLook, clock, dayLabel, dueDate, type NoteMeta, type PanelMode, type SearchHit, type Searched } from "$lib/api";
   import Icon from "$lib/Icon.svelte";
   import Home from "$lib/Home.svelte";
   import NoteRow from "$lib/NoteRow.svelte";
   import NoteView from "$lib/NoteView.svelte";
   import History from "$lib/History.svelte";
+  import Tasks from "$lib/Tasks.svelte";
   import Settings from "$lib/Settings.svelte";
   import Setup from "$lib/Setup.svelte";
 
-  type Section = "home" | "notes" | "history" | "settings" | "setup";
+  type Section = "home" | "notes" | "tasks" | "history" | "settings" | "setup";
   type Filter = "all" | "meeting" | "voice";
 
   let width = $state(400);
@@ -22,6 +23,12 @@
   let query = $state("");
   let hits = $state<SearchHit[] | null>(null);
   let selected = $state<string | null>(null);
+  /** Where to open the selected note, for a search hit in its transcript. */
+  let at = $state<number | null>(null);
+  let smart = $state<Searched | null>(null);
+  let searching = $state(false);
+  let listening = $state(false);
+  let searchNote = $state("");
   let pinned = $state(false);
   let anchor: PanelMode["anchor"] = null;
   let card = $state<HTMLDivElement>();
@@ -69,6 +76,7 @@
   const tabs: { id: Section; label: string; icon: string }[] = [
     { id: "home", label: "Home", icon: "home" },
     { id: "notes", label: "Notes", icon: "all" },
+    { id: "tasks", label: "Tasks", icon: "tasks" },
     { id: "history", label: "History", icon: "history" },
     { id: "settings", label: "Settings", icon: "settings" },
   ];
@@ -87,6 +95,7 @@
     }
     return out;
   });
+  let openTasks = $derived(notes.reduce((n, m) => n + (m.openTasks ?? 0), 0));
   let counts = $derived({
     all: notes.length,
     meeting: notes.filter((n) => n.kind === "meeting").length,
@@ -102,6 +111,8 @@
 
   let searchTimer: ReturnType<typeof setTimeout>;
   function onSearch() {
+    smart = null;
+    searchNote = "";
     clearTimeout(searchTimer);
     searchTimer = setTimeout(async () => {
       hits = query.trim() ? await api.searchNotes(query) : null;
@@ -114,15 +125,95 @@
   function clearSearch() {
     query = "";
     hits = null;
+    smart = null;
+    searchNote = "";
+    if (listening) {
+      listening = false;
+      api.listenStop().catch(() => {});
+    }
   }
+
+  /** Search by meaning: Enter in the search box, or a spoken search. */
+  async function deepSearch() {
+    const q = query.trim();
+    if (!q) return;
+    searching = true;
+    searchNote = "";
+    try {
+      smart = await api.smartSearch(q);
+      hits = smart.hits.map((h) => ({ meta: h.meta, snippet: h.snippet }));
+      section = "notes";
+      if (!wide) selected = null;
+    } catch (e) {
+      searchNote = String(e);
+    } finally {
+      searching = false;
+    }
+  }
+
+  async function toggleListen() {
+    if (listening) {
+      listening = false;
+      searching = true;
+      try {
+        const said = await api.listenStop();
+        if (said) {
+          query = said;
+          await deepSearch();
+        } else searchNote = "Didn’t catch that. Try again?";
+      } catch (e) {
+        searchNote = String(e);
+      } finally {
+        searching = false;
+      }
+    } else {
+      try {
+        await api.listenStart();
+        listening = true;
+        searchNote = "";
+        searchBox?.focus();
+      } catch (e) {
+        searchNote = String(e);
+      }
+    }
+  }
+
+  function searchKeys(e: KeyboardEvent) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (listening) toggleListen();
+      else deepSearch();
+    } else if (e.key === "Escape" && (query || listening)) {
+      e.stopPropagation();
+      clearSearch();
+    }
+  }
+
+  const filterChips = (s: Searched) =>
+    [
+      s.filters.person,
+      s.filters.kind === "meeting" ? "Meetings" : s.filters.kind ? "Voice notes" : null,
+      s.filters.after ? `From ${dueDate(s.filters.after)}` : null,
+      s.filters.before ? `Until ${dueDate(s.filters.before)}` : null,
+    ].filter((c): c is string => !!c);
 
   /** Sections as the app names them: the dot's menu, the tray, toasts. */
   function go(s: string) {
     selected = wide ? selected : null;
+    if (s === "voice-search") {
+      section = "notes";
+      if (!listening) {
+        query = "";
+        hits = null;
+        smart = null;
+      }
+      toggleListen();
+      return;
+    }
     if (s === "meetings" || s === "voice" || s === "notes") {
       section = "notes";
       filter = s === "meetings" ? "meeting" : s === "voice" ? "voice" : "all";
-    } else if (s === "home" || s === "history" || s === "settings" || s === "setup") section = s;
+    } else if (s === "home" || s === "tasks" || s === "history" || s === "settings" || s === "setup") section = s;
   }
 
   function openNote(path: string) {
@@ -130,6 +221,7 @@
     section = "notes";
     filter = "all";
     selected = path;
+    at = null;
   }
 
   async function loadLook() {
@@ -156,6 +248,7 @@
       listen("panel-leave", leave),
       listen("panel-hidden", () => {
         if (!wide) selected = null;
+        if (listening) clearSearch();
       }),
     ];
     const keys = (e: KeyboardEvent) => {
@@ -184,7 +277,7 @@
 
 {#snippet list()}
   {#if wide}
-    <div class="list-head">{hits ? "Search" : filter === "all" ? "All notes" : filters.find((f) => f.id === filter)?.label}</div>
+    <div class="list-head">{smart ? "Best matches" : hits ? "Search" : filter === "all" ? "All notes" : filters.find((f) => f.id === filter)?.label}</div>
   {:else}
     <div class="filters">
       {#each filters as f (f.id)}
@@ -197,6 +290,28 @@
   <div class="scroll">
     {#if !loaded}
       <div></div>
+    {:else if smart}
+      {#if filterChips(smart).length || !smart.byMeaning}
+        <div class="narrowed">
+          {#each filterChips(smart) as c}<span class="chip">{c}</span>{/each}
+          {#if !smart.byMeaning}
+            <span class="faint">Matched words only. Searching by meaning needs a small model (34 MB).</span>
+            <button class="chip" onclick={() => api.setupStart(false).then(() => (section = "setup"))}>Download it</button>
+          {/if}
+        </div>
+      {/if}
+      {#if smart.hits.length === 0}
+        <div class="empty"><strong>No matches</strong><span>Nothing in your notes is about “{query}”.</span></div>
+      {/if}
+      {#each smart.hits.filter((h) => matches(h.meta)) as h, i (i)}
+        <NoteRow
+          meta={h.meta}
+          snippet={h.snippet}
+          when={dayLabel(h.meta.date) + (h.t != null ? ` · ${clock(h.t)}` : "")}
+          selected={wide && selected === h.meta.path}
+          onclick={() => ((selected = h.meta.path), (at = h.t))}
+        />
+      {/each}
     {:else if shown.length === 0}
       <div class="empty">
         {#if hits}
@@ -211,7 +326,7 @@
       {#each groups as g (g.label)}
         <div class="day">{g.label}</div>
         {#each g.items as { meta, snippet } (meta.path)}
-          <NoteRow {meta} {snippet} selected={wide && selected === meta.path} onclick={() => (selected = meta.path)} />
+          <NoteRow {meta} {snippet} selected={wide && selected === meta.path} onclick={() => ((selected = meta.path), (at = null))} />
         {/each}
       {/each}
     {/if}
@@ -221,13 +336,26 @@
 {#snippet search()}
   <label class="search">
     <Icon name="search" size={14} />
-    <input bind:this={searchBox} bind:value={query} oninput={onSearch} placeholder="Search notes" spellcheck="false" />
-    {#if query}
+    <input
+      bind:this={searchBox}
+      bind:value={query}
+      oninput={onSearch}
+      onkeydown={searchKeys}
+      placeholder={listening ? "Listening… press Enter when done" : searching ? "Searching…" : "Search notes, or ask"}
+      spellcheck="false"
+    />
+    {#if query && !listening}
       <button class="clear" onclick={clearSearch} aria-label="Clear search"><Icon name="x" size={12} /></button>
-    {:else}
-      <kbd>Ctrl F</kbd>
     {/if}
+    <button class="mic" class:on={listening} onclick={toggleListen} disabled={searching} title={listening ? "Stop and search" : "Search by voice (Ctrl+Alt+F)"}>
+      <Icon name="voice" size={14} />
+    </button>
   </label>
+  {#if searching || searchNote || (hits && !smart && query.trim())}
+    <div class="search-hint">
+      {#if searching}Searching by meaning…{:else if searchNote}{searchNote}{:else}Press Enter to search by meaning{/if}
+    </div>
+  {/if}
 {/snippet}
 
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
@@ -270,6 +398,7 @@
                 <span class="count">{counts[f.id]}</span>
               </button>
             {/each}
+            <button class="nav" class:active={section === "tasks"} onclick={() => (section = "tasks")}><Icon name="tasks" /><span>Tasks</span>{#if openTasks}<span class="count">{openTasks}</span>{/if}</button>
             <button class="nav" class:active={section === "history"} onclick={() => (section = "history")}><Icon name="history" /><span>Dictation history</span></button>
           </nav>
           <div class="spacer"></div>
@@ -280,6 +409,8 @@
         </aside>
         {#if section === "home"}
           <main class="page"><div class="narrow"><Home {notes} onopen={openNote} onall={() => (section = "notes")} /></div></main>
+        {:else if section === "tasks"}
+          <main class="page"><Tasks onopen={openNote} /></main>
         {:else if section === "history"}
           <main class="page"><History /></main>
         {:else if section === "settings"}
@@ -288,8 +419,8 @@
           <section class="list">{@render list()}</section>
           <main class="reader">
             {#if selected}
-              {#key selected}
-                <NoteView path={selected} onchange={refresh} ondelete={() => ((selected = null), refresh())} />
+              {#key `${selected}@${at}`}
+                <NoteView path={selected} {at} onchange={refresh} ondelete={() => ((selected = null), refresh())} />
               {/key}
             {:else}
               <div class="empty">
@@ -302,8 +433,8 @@
       </div>
     {:else if selected}
       <main class="pushed">
-        {#key selected}
-          <NoteView path={selected} compact onchange={refresh} ondelete={() => ((selected = null), refresh())} />
+        {#key `${selected}@${at}`}
+          <NoteView path={selected} {at} compact onchange={refresh} ondelete={() => ((selected = null), refresh())} />
         {/key}
       </main>
     {:else}
@@ -320,6 +451,8 @@
       <main class="body">
         {#if section === "home"}
           <Home {notes} onopen={openNote} onall={() => (section = "notes")} />
+        {:else if section === "tasks"}
+          <Tasks onopen={openNote} />
         {:else if section === "history"}
           <History />
         {:else if section === "settings"}
@@ -426,8 +559,51 @@
     background: transparent;
     color: var(--text);
   }
-  .search kbd {
-    font: 11px "Segoe UI", sans-serif;
+  .mic {
+    border: 0;
+    background: transparent;
+    color: var(--faint);
+    display: grid;
+    padding: 4px;
+    border-radius: 6px;
+  }
+  .mic:hover {
+    color: var(--text);
+    background: var(--hover);
+  }
+  .mic.on {
+    color: #fff;
+    background: var(--meeting, #e5484d);
+    animation: listening 1.2s ease-in-out infinite;
+  }
+  @keyframes listening {
+    50% {
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--meeting, #e5484d) 25%, transparent);
+    }
+  }
+  .search-hint {
+    font-size: 11.5px;
+    color: var(--faint);
+    padding: 4px 4px 0;
+  }
+  .narrowed {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 8px 8px 4px;
+    font-size: 12px;
+  }
+  .narrowed button.chip {
+    border: 0;
+    font-size: 12px;
+  }
+  .narrowed .chip {
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent-text);
+  }
+  .narrowed .faint {
     color: var(--faint);
   }
   .clear {

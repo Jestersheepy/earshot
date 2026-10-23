@@ -67,6 +67,20 @@ pub const MODELS: &[Model] = &[
         part: "Speaker model",
     },
     Model {
+        path: "embed/model_quantized.onnx",
+        url: "https://huggingface.co/Xenova/bge-small-en-v1.5/resolve/ea104dacec62c0de699686887e3f920caeb4f3e3/onnx/model_quantized.onnx",
+        size: 34_014_426,
+        sha256: "6c9c6101a956d62dfb5e7190c538226c0c5bb9cb27b651234b6df063ee7dbfe4",
+        part: "Search model",
+    },
+    Model {
+        path: "embed/vocab.txt",
+        url: "https://huggingface.co/Xenova/bge-small-en-v1.5/resolve/ea104dacec62c0de699686887e3f920caeb4f3e3/vocab.txt",
+        size: 231_508,
+        sha256: "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3",
+        part: "Search model",
+    },
+    Model {
         path: "llm/LFM2-1.2B-Q4_K_M.gguf",
         url: "https://huggingface.co/LiquidAI/LFM2-1.2B-GGUF/resolve/5399e76c648f4eb8c053feb1ab747277dea5bf8b/LFM2-1.2B-Q4_K_M.gguf",
         size: 730_893_248,
@@ -107,6 +121,11 @@ fn present(dir: &Path, m: &Model) -> bool {
 pub fn missing(cfg: &Config, summaries: bool) -> Vec<&'static Model> {
     let dir = cfg.models_dir();
     MODELS.iter().filter(|m| (summaries || m.part != SUMMARIES) && !present(&dir, m)).collect()
+}
+
+pub fn search_ready(cfg: &Config) -> bool {
+    let dir = cfg.models_dir();
+    MODELS.iter().filter(|m| m.path.starts_with("embed/")).all(|m| present(&dir, m))
 }
 
 pub fn speech_ready(cfg: &Config) -> bool {

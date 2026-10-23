@@ -23,7 +23,7 @@ use earshot_overlay::{Overlay, UiEvent};
 
 use crate::config::Config;
 use crate::history::{Entry, History};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use crate::llm::Pool;
 use crate::meeting::{Meeting, worth_summarizing};
 use crate::text::FORMAT_CTX;
@@ -273,6 +273,7 @@ impl Controller {
                 "meeting" => self.action("meeting"),
                 "paste_last" => self.action("paste_last"),
                 "toggle_pill" => self.action("toggle"),
+                "search" => self.action("voice-search"),
                 _ => {}
             },
         }
@@ -351,6 +352,10 @@ impl Controller {
                 Ok(cap) => {
                     self.tone(Tone::Start);
                     self.rec = Some(Recording::Note { cap, started: Local::now(), t0: Instant::now() });
+                    let model = self.sh.cfg.llm_model(&self.sh.cfg.llm.format_model);
+                    if self.sh.pool.available(&model) {
+                        self.sh.pool.warm(&model, FORMAT_CTX);
+                    }
                 }
                 Err(e) => self.fail(format!("Microphone unavailable: {e}")),
             },
@@ -478,6 +483,16 @@ impl Controller {
             JobDone::Saved { title, body, path } => {
                 self.flash(PillState::Done);
                 let _ = self.app.emit("notes-changed", ());
+                // index it now so the next search doesn't wait on it
+                let search = self.app.try_state::<crate::commands::AppState>().and_then(|s| s.search.clone());
+                if let Some(s) = search.filter(|_| crate::setup::search_ready(&self.sh.cfg)) {
+                    let dir = self.sh.cfg.notes_dir.clone();
+                    std::thread::spawn(move || {
+                        if let Err(e) = s.refresh(&dir) {
+                            eprintln!("search index: {e:#}");
+                        }
+                    });
+                }
                 let id = self.toast(&title, &body, Icon::Check, Accent::Dictate, vec![("open", "Open")], 8.0);
                 self.toast_paths.insert(id, path);
             }
@@ -597,6 +612,7 @@ impl Controller {
             }
             "open" => crate::window::show(&self.app, "home", self.place()),
             "history" => crate::window::show(&self.app, "history", self.place()),
+            "voice-search" => crate::window::show(&self.app, "voice-search", self.place()),
             "settings" => crate::window::show(&self.app, "settings", self.place()),
             "welcome" if !crate::setup::speech_ready(&self.sh.cfg) => crate::window::show(&self.app, "setup", self.place()),
             "speech-ready" if self.sh.cfg.preload => {
@@ -742,8 +758,41 @@ fn save_note(sh: &Shared, wave: Vec<f32>, started: DateTime<Local>, duration: f3
         write_wav(&wav, &wave)?;
         extra.push(("audio", file_name(&wav)));
     }
+    let triage = triage(sh, &body, started);
+    if let Some(t) = triage.as_ref().and_then(|t| t.title.clone()) {
+        extra.push(("title", t));
+    }
+    if let Some(k) = triage.as_ref().and_then(|t| t.kind.clone()) {
+        extra.push(("tags", k));
+    }
     notes::write_note(&path, "voice-note", started, duration, &body, &extra).context("saving voice note")?;
-    Ok(JobDone::Saved { title: "Voice note saved".into(), body: preview(&body), path })
+    let task = triage.and_then(|t| t.task);
+    if let Some(task) = &task {
+        crate::library::set_section(&path, crate::tasks::HEADING, &task.to_md())?;
+    }
+    let title = if task.is_some() { "To-do saved" } else { "Voice note saved" };
+    Ok(JobDone::Saved { title: title.into(), body: preview(&body), path })
+}
+
+/// A title and a type (note, to-do, idea, reminder) from the small model, if it's there. Never holds up the note.
+fn triage(sh: &Shared, body: &str, started: DateTime<Local>) -> Option<notes::Triage> {
+    let cfg = &sh.cfg;
+    let model = cfg.llm_model(&cfg.llm.format_model);
+    if body.split_whitespace().count() < 4 || !sh.pool.available(&model) {
+        return None;
+    }
+    let today = started.date_naive();
+    let text: String = body.chars().take(6000).collect();
+    match sh.pool.chat_json(&model, FORMAT_CTX, notes::TRIAGE_SYSTEM, &text, notes::triage_schema(), 120) {
+        Ok(reply) => {
+            let owner = if cfg.your_name.trim().is_empty() { "Me" } else { cfg.your_name.trim() };
+            Some(notes::parse_triage(&reply, body, owner, today))
+        }
+        Err(e) => {
+            eprintln!("voice note triage: {e:#}");
+            None
+        }
+    }
 }
 
 /// Tell the voices apart. Without the speaker model, or if it fails, the transcript keeps you / Others.
@@ -796,17 +845,17 @@ fn save_meeting(sh: &Shared, meeting: Meeting, started: DateTime<Local>, with_su
         write_wav(&wav, &done.mix)?;
         extra.push(("audio", file_name(&wav)));
     }
-    let title = format!("# Meeting · {}", started.format("%a %d %b %Y, %H:%M"));
+    let dated = format!("Meeting · {}", started.format("%a %d %b %Y, %H:%M"));
     let transcript = transcript_md(&done.lines);
-    let write = |summary: &str| {
-        let body = format!("{title}\n\n## {}\n\n{summary}\n\n## Transcript\n\n{transcript}", cfg.summary_mode.heading());
+    let write = |title: &str, summary: &str| {
+        let body = format!("# {title}\n\n## {}\n\n{summary}\n\n## Transcript\n\n{transcript}", cfg.summary_mode.heading());
         notes::write_note(&path, "meeting", started, done.duration_s, &body, &extra)
     };
     // Save the transcript first so nothing is lost if summarizing fails or the app quits.
     let by = crate::backend::Summarizer::new(cfg, &sh.pool);
     let worth = worth_summarizing(&done.lines);
     let can_summarize = with_summary && worth && by.is_ok();
-    write(&match &by {
+    write(&dated, &match &by {
         _ if can_summarize => "_Summarizing…_".to_string(),
         Err(e) if with_summary && worth => format!("_Not summarized: {e}_"),
         _ => "_Too short to summarize._".to_string(),
@@ -819,13 +868,17 @@ fn save_meeting(sh: &Shared, meeting: Meeting, started: DateTime<Local>, with_su
             notes::fmt_duration(done.duration_s),
             extra[0].1
         );
-        match crate::summary::summarize(by.as_ref().unwrap(), &done.lines, &head, cfg.summary_mode) {
-            Ok(s) => {
-                write(&s)?;
-                note = preview(&s.lines().filter(|l| !l.starts_with('#')).collect::<Vec<_>>().join(" "));
+        let want = crate::summary::Want { title: true, chapters: true, tasks: true };
+        match crate::summary::summarize(by.as_ref().unwrap(), &done.lines, &head, cfg.summary_mode, want) {
+            Ok(w) => {
+                write(w.title.as_deref().unwrap_or(&dated), &w.summary)?;
+                crate::library::save_extras(&path, &w)?;
+                note = preview(&w.gist.clone().unwrap_or_else(|| {
+                    w.summary.lines().filter(|l| !l.starts_with('#')).collect::<Vec<_>>().join(" ")
+                }));
             }
             Err(e) => {
-                write(&format!("_Summary failed: {e}_"))?;
+                write(&dated, &format!("_Summary failed: {e}_"))?;
                 note = "Transcript saved; summary failed.".into();
             }
         }

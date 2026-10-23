@@ -10,6 +10,12 @@ export type NoteMeta = {
   audio: string | null;
   preview: string;
   words: number;
+  /** One sentence on the outcome, written with the summary. */
+  gist: string | null;
+  /** Voice notes: note, todo, idea or reminder. */
+  tags: string[];
+  openTasks: number;
+  participants: string[];
 };
 export type Line = { t: number; speaker: string; text: string };
 export type SummaryMode = "concise" | "standard" | "nuanced";
@@ -20,8 +26,16 @@ export type NoteDetail = {
   body: string;
   /** Speaker names guessed from a known voice, not yet confirmed. */
   unconfirmed: string[];
+  tasks: Task[];
+  chapters: Chapter[];
 };
+export type Task = { done: boolean; owner: string | null; text: string; due: string | null; t: number | null };
+export type Chapter = { t: number; title: string };
+export type TaskRow = { note: NoteMeta; index: number; task: Task };
 export type SearchHit = { meta: NoteMeta; snippet: string };
+export type Filters = { person: string | null; after: string | null; before: string | null; kind: string | null };
+export type Found = { meta: NoteMeta; snippet: string; t: number | null; speakers: string[] };
+export type Searched = { hits: Found[]; filters: Filters; byMeaning: boolean };
 export type HistoryRow = {
   id: number;
   ts: string;
@@ -36,7 +50,7 @@ export type Snippet = { trigger: string; text: string };
 export type Config = {
   notes_dir: string;
   models_dir: string | null;
-  hotkeys: Record<"dictate" | "command" | "voice_note" | "meeting" | "paste_last" | "toggle_pill", string>;
+  hotkeys: Record<"dictate" | "command" | "voice_note" | "meeting" | "paste_last" | "toggle_pill" | "search", string>;
   stt_threads: number;
   idle_unload_min: number;
   preload: boolean;
@@ -93,10 +107,16 @@ export type PanelMode = { expanded: boolean; pinned: boolean; anchor: [number, n
 export const api = {
   listNotes: () => invoke<NoteMeta[]>("list_notes"),
   searchNotes: (query: string) => invoke<SearchHit[]>("search_notes", { query }),
+  smartSearch: (query: string) => invoke<Searched>("smart_search", { query }),
+  listenStart: () => invoke<void>("listen_start"),
+  listenStop: () => invoke<string>("listen_stop"),
   getNote: (path: string) => invoke<NoteDetail>("get_note", { path }),
   renameNote: (path: string, title: string) => invoke<void>("rename_note", { path, title }),
   deleteNote: (path: string) => invoke<void>("delete_note", { path }),
   resummarize: (path: string, mode: SummaryMode) => invoke<string>("resummarize", { path, mode }),
+  listTasks: () => invoke<TaskRow[]>("list_tasks"),
+  setTask: (path: string, index: number, done: boolean) => invoke<void>("set_task", { path, index, done }),
+  taskToCalendar: (path: string, index: number) => invoke<void>("task_to_calendar", { path, index }),
   reveal: (path: string) => invoke<void>("reveal", { path }),
   openNotesFolder: () => invoke<void>("open_notes_folder"),
   listHistory: (query: string, limit = 300) => invoke<HistoryRow[]>("list_history", { query, limit }),
@@ -175,4 +195,9 @@ export const dayLabel = (iso: string) => {
 export const timeOf = (iso: string) => parse(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 export const longDate = (iso: string) =>
   parse(iso).toLocaleString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+/** "Fri 24 Oct" for a YYYY-MM-DD due date, read as a local day. */
+export const dueDate = (ymd: string) => {
+  const [y, m, d] = ymd.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+};
 export const appName = (app: string | null) => (app ?? "").replace(/\.exe$/i, "");
